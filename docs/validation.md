@@ -14,7 +14,9 @@ in `[ ]`. As a non-root user every text result ends with the line
 
 Text examples are shown in the compact output of 1.2 (2026-10-05). They were
 rewritten from the recorded runs into the new shape, not captured again; the
-checks themselves were not re-run. JSON examples are unchanged.
+checks themselves were not re-run. `--detail` examples are reshaped the same
+way into the compact detail view of 1.2.2, also without re-running. JSON
+examples are unchanged.
 
 ## Results
 
@@ -136,8 +138,9 @@ Listener on 47112 (PID 52590); a client in another process connected from port
 ## 12. Dual-stack `::` listener
 
 One AF_INET6 socket on `::` (V6ONLY off). lsof shows one row
-(`TCP *:47113 (LISTEN)`) and so does portpeek: `*:47113   listening   all interfaces`,
-with `IPv6` in the family column of `--detail`.
+(`TCP *:47113 (LISTEN)`) and so does portpeek: `*:47113   listening   all interfaces`.
+`--detail` names the family on the binding line, `*:47113  v6  listening  all interfaces`
+(recorded as `IPv6` in the family column of the old `--detail`).
 
 ## 13. TCP bound but not listening
 
@@ -222,7 +225,9 @@ Remaining, none blocking:
 5. Stale PID in the stop hint (check 10): `kill 52572` for an exited process.
 6. Long commands were printed in full (UDP 5353 Chrome/Codex helpers: about
    1.2 KB per owner, including metrics ids). Addressed in 1.2: the default
-   view cuts the command to one line; `--detail` still prints it in full.
+   view cuts the command to one line. Since 1.2.2 `--detail` does too, keeping
+   whole arguments and counting the rest (`…  (+22 args)`); the full command
+   is in `--json`.
 7. `ps` renders newlines as `\012`; `python3 -c` scripts show
    `-c \012import socket,time\012...` (JSON-escaped as `\\012`).
 

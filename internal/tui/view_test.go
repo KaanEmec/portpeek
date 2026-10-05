@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/kaanemec/portpeek/internal/cli"
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
 
@@ -365,30 +366,72 @@ func TestView_StyledChrome(t *testing.T) {
 	}
 }
 
+// detailedOwner is nodeOwner with every process field known.
+func detailedOwner() inspect.Owner {
+	o := nodeOwner()
+	o.Process.User = "kaanemec"
+	o.Process.Command = "/usr/local/bin/node server.js"
+	o.Process.WorkingDir = "/Users/kaanemec/app"
+	return o
+}
+
 func TestView_StyledDetails(t *testing.T) {
 	t.Parallel()
 
 	f := newThemedFixture(t, 100, true)
 	th := f.m.theme
-	f.ins.res = inspect.Result{Owners: []inspect.Owner{nodeOwner()}}
+	owners := []inspect.Owner{detailedOwner()}
+	f.ins.res = inspect.Result{Owners: owners}
 	f.sendAll(t, f.press(t, "enter"))
 
 	content := f.m.View().Content
 	lines := strings.Split(stripANSI(content), "\n")
-	if !strings.HasPrefix(lines[1], "╭─ 3000/tcp ─") || !strings.HasSuffix(lines[1], "╮") {
-		t.Errorf("top border is %q", lines[1])
+	if title := lines[0]; !strings.HasSuffix(title, "portpeek   3000/tcp  inspected 12:01:00") {
+		t.Errorf("title bar is %q", title)
+	}
+	if want := "╭" + strings.Repeat("─", 98) + "╮"; lines[1] != want {
+		t.Errorf("top border is %q, want %q without a title", lines[1], want)
 	}
 	if last := lines[len(lines)-2]; !strings.HasPrefix(last, "╰─") {
 		t.Errorf("line above the footer is %q, want the bottom border", last)
 	}
-	if !strings.Contains(content, th.heading.Render("Sockets")) {
-		t.Error("the Sockets heading is not styled")
+	if !strings.HasPrefix(lines[len(lines)-1], "k stop   esc back") {
+		t.Errorf("footer is %q", lines[len(lines)-1])
 	}
-	if !strings.Contains(content, th.exposureStyle(inspect.ExposureLoopback).Render("loopback only")) {
-		t.Error("the socket's exposure is not coloured")
+
+	// The box holds exactly the CLI's detail text for its inner width.
+	text := cli.RenderDetail(inspect.Query{Port: 3000, Protocol: inspect.TCP}, owners, 100-boxChrome)
+	for i, want := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		row := lines[2+i]
+		if got := strings.TrimRight(strings.TrimSuffix(strings.TrimPrefix(row, "│ "), "│"), " "); got != want {
+			t.Errorf("box row %d is %q, want %q", i, got, want)
+		}
 	}
-	if !strings.Contains(content, th.dim.Render(pad("user", len("working dir")+3))) {
-		t.Error("the Process labels are not dim")
+	if strings.Contains(stripANSI(content), "Copy:") {
+		t.Error("details still show a Copy line")
+	}
+	if n := strings.Count(stripANSI(content), "3000/tcp"); n != 2 {
+		t.Errorf("port 3000/tcp appears %d times, want the title bar and the headline", n)
+	}
+
+	for name, want := range map[string]string{
+		"headline port":  th.port.Render("3000/tcp"),
+		"owner name":     th.process.Render("node"),
+		"pid and user":   th.dim.Render("  PID 48213  user kaanemec"),
+		"cmd key":        th.dim.Render("cmd   "),
+		"cwd key":        th.dim.Render("cwd   "),
+		"stop key":       th.dim.Render("stop  "),
+		"stop separator": th.dim.Render("  ·  "),
+		"exposure":       th.exposureStyle(inspect.ExposureLoopback).Render("loopback only"),
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("details lack the %s styled as %q", name, want)
+		}
+	}
+
+	// The hint depends on the privileges the tests run with.
+	if hint := cli.CompletenessHint(owners); hint != "" && !strings.Contains(content, th.hint.Render(hint)) {
+		t.Errorf("details lack the hint styled as %q", th.hint.Render(hint))
 	}
 
 	f.press(t, "k")
@@ -396,5 +439,47 @@ func TestView_StyledDetails(t *testing.T) {
 	prompt := lines[len(lines)-2]
 	if !strings.HasPrefix(prompt, " Send SIGTERM to node (PID 48213)? y/N") || lipgloss.Width(prompt) != 100 {
 		t.Errorf("stop prompt is %q, want a full-width bar", prompt)
+	}
+}
+
+func TestView_StyledDetailsSeveralOwners(t *testing.T) {
+	t.Parallel()
+
+	f := newThemedFixture(t, 100, true)
+	th := f.m.theme
+	other := detailedOwner()
+	other.Process.PID, other.Process.Name = 500, "python3"
+	unknown := unknownOwner()
+	unknown.Sockets = nodeOwner().Sockets
+	f.ins.res = inspect.Result{Owners: []inspect.Owner{detailedOwner(), other, unknown}}
+	f.sendAll(t, f.press(t, "enter"))
+
+	content := f.m.View().Content
+	lines := strings.Split(stripANSI(content), "\n")
+	if !strings.HasPrefix(lines[2], "│ 3000/tcp  3 processes ") {
+		t.Errorf("headline row is %q", lines[2])
+	}
+	for name, want := range map[string]string{
+		"headline port":   th.port.Render("3000/tcp"),
+		"process count":   th.dim.Render("3 processes"),
+		"first owner":     th.process.Render("node"),
+		"second owner":    th.process.Render("python3"),
+		"second pid":      th.dim.Render("  PID 500  user kaanemec"),
+		"unknown owner":   th.unknown.Render("unknown process"),
+		"unknown pid":     th.dim.Render("  PID -"),
+		"unavailable cmd": th.unknown.Render("unavailable"),
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("details lack the %s styled as %q", name, want)
+		}
+	}
+
+	// Several owners: k still refuses and names the --pid form.
+	f.press(t, "k")
+	if f.m.detail.confirm || len(f.stop.calls) != 0 {
+		t.Error("k offered to stop one of several owners")
+	}
+	if !strings.Contains(f.screen(), "several owners; use: portpeek 3000 --stop --pid <pid>") {
+		t.Errorf("details lack the several-owners refusal:\n%s", f.screen())
 	}
 }

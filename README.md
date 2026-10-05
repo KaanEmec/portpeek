@@ -46,7 +46,7 @@ Usage: portpeek <port> [--tcp|--udp] [--detail|--json]
 Options:
   --tcp        only look at TCP sockets
   --udp        only look at UDP sockets
-  --detail     show everything known: every socket, user, full command,
+  --detail     show everything known: every socket, user, command,
                working directory and stop commands
   --json       print machine-readable JSON (schema 1); --detail is ignored
   --stop       send SIGTERM to the process using the port, after confirmation
@@ -102,27 +102,24 @@ asks for `--pid` when several processes share the port.
 
 ```
 $ portpeek 8765 --detail
-8765/tcp  Python  (PID 85528)
+8765/tcp  Python  PID 4420  user kaanemec
+  127.0.0.1:8765  v4  listening  loopback only
+  cmd   Python -m http.server 8765 --bind 127.0.0.1
+  cwd   /Users/kaanemec/Developer/Port-Peek
+  stop  kill 4420  ·  portpeek 8765 --stop
 
-  Sockets
-    127.0.0.1:8765   IPv4   listening   loopback only (this machine only)
-
-  Process
-    user          kaanemec
-    command       /Applications/Xcode.app/.../MacOS/Python -m http.server 8765 --bind 127.0.0.1
-    working dir   /Users/kaanemec/Developer/Port-Peek
-
-  Stop
-    kill 85528          or: portpeek 8765 --stop
-
-  other users' sockets hidden; run with sudo
+other users' sockets hidden; run with sudo
 ```
 
-(The command path is shortened with `...`; the rest is real output.) The full
-command is printed on one line, however long. With several processes each one
-gets its own block under a `5353/udp  2 processes` headline. A field that could
-not be read prints the reason, for example `command   unavailable (process
-exited)`.
+The port is named once, then the owner with its PID and user, one line per
+binding (`v4`, `v6` or `v4+v6`), and the `cmd`, `cwd` and `stop` lines. The
+command is shortened to one line like the default view; arguments that do not
+fit are dropped whole and counted, as in
+`Codex (Service) --type=utility --utility-sub-type=network.mojom.NetworkService …  (+22 args)`.
+The full command is in `--json`. With several processes the headline is
+`5353/udp  2 processes` and each process gets its own block, separated by a
+blank line, with `--pid` in its stop command. A field that could not be read prints the reason, for example
+`cwd   unavailable (process exited)`.
 
 ### Example: JSON
 
@@ -258,8 +255,8 @@ localized system may report no owner for a port that is in use.
   loopback, `*` is all interfaces). It says nothing about firewalls.
 - A dual-stack `::` listener appears once, as IPv6 `*`.
 - Link-local IPv6 prints as `[fe80::1%lo0]`; `lsof` shows `[fe80:1::1]`.
-- The default view cuts commands to one line; `--detail` prints them in full,
-  so browser helpers give long detail output.
+- Text output shortens commands to one line, including `--detail`; the full
+  command line is only in `--json`.
 - A process can exit between lookups; its unreadable fields show as unavailable.
 
 ## Design and boundaries

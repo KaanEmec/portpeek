@@ -71,8 +71,9 @@ signal failed), `130` interrupted.
 Default text is compact: a `port/proto  name  (PID n)` headline, one binding line per
 address (families collapsed to `(v4+v6)`), the command shortened to the terminal width,
 and a `stop:` hint the tool never runs itself; several owners become one aligned row
-each. `--detail` prints grouped Sockets / Process / Stop sections with every known
-field. Unavailable fields print the reason, never a guess. Hidden-socket and
+each. `--detail` prints one compact block per owner: `name  PID n  user u`, one line
+per socket, `cmd` shortened to one line with a `(+N args)` count (full command in JSON),
+`cwd`, and `stop` with both the kill and the portpeek command; the port is stated once. Unavailable fields print the reason, never a guess. Hidden-socket and
 unknown-owner hints are one short trailing line. Styling (bold, dim) only on a
 terminal with `NO_COLOR` unset and `TERM != dumb`; width from the terminal, else 100.
 `RenderText`/`RenderDetail` are exported for the TUI, always plain at width 100.
@@ -106,7 +107,7 @@ control-character escaped in every text view. JSON (`--json`) is versioned
 | v0.1 macOS answer | done 2026-10-05 | model, CLI, lsof adapter, validation record in docs/validation.md |
 | v0.2 safe control + Linux | done 2026-10-05 | `--stop` flow; `ss`/procfs adapter validated in Docker (golang:1.27, iproute2 6.15) and CI ubuntu runner |
 | v1.0 cross-platform release | released in v1.2.0 (2026-10-05) | Windows live test green on CI; GoReleaser + release workflow ready; remote github.com/kaanemec/portpeek, MIT confirmed by owner 2026-10-05 |
-| v1.2 readable output | done 2026-10-05 | compact default, `--detail` view, TUI details pane uses `RenderDetail` |
+| v1.2 readable output | done 2026-10-05 (1.2.2 compacts `--detail`) | compact default, `--detail` view, TUI details pane uses `RenderDetail` |
 | v1.1 port TUI | done 2026-10-05 | `Lister` on all adapters; Bubble Tea table, details, refresh, search, stop from details; verified live on macOS |
 
 Out of scope: remote scanning, Docker management, traffic measurement, history.

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -342,8 +341,9 @@ func (m model) clampedOffset() int {
 	return clamp(off, 0, max(len(m.visible)-h, 0))
 }
 
-// renderDetails shows the CLI's --detail answer for the selected port, in a
-// box when styled.
+// renderDetails shows the CLI's --detail answer for the selected port, laid
+// out for the pane's width, in a box when styled. The title bar names the
+// port, so the box has no title.
 func (m model) renderDetails() string {
 	t := m.theme
 	w := m.viewWidth()
@@ -362,11 +362,9 @@ func (m model) renderDetails() string {
 	case d.errText != "":
 		body = append(body, t.line(inner, seg{text: d.errText, style: t.err}))
 	default:
-		text := strings.TrimSuffix(cli.RenderDetail(q, d.owners), "\n")
+		text := strings.TrimSuffix(cli.RenderDetail(q, d.owners, inner), "\n")
 		body = append(body, t.detailLines(inner, text, cli.CompletenessHint(d.owners))...)
 	}
-	copyCmd := fmt.Sprintf("portpeek %d --%s", q.Port, q.Protocol)
-	body = append(body, "", t.line(inner, seg{text: "Copy: ", style: t.dim}, plainSeg(copyCmd)))
 
 	footer := []string{}
 	if d.status != "" {
@@ -377,7 +375,7 @@ func (m model) renderDetails() string {
 	room := max(m.viewHeight()-2-len(footer), 0)
 	lines := []string{m.detailTitle()}
 	if boxed {
-		lines = append(lines, t.box(w, room, fmt.Sprintf(" %d/%s ", q.Port, q.Protocol), body)...)
+		lines = append(lines, t.box(w, room, body)...)
 	} else {
 		if len(body) > room {
 			body = body[:room]
@@ -392,16 +390,17 @@ func (m model) renderDetails() string {
 	return strings.Join(lines, "\n")
 }
 
-// detailTitle is the first line of the details screen.
+// detailTitle is the first line of the details screen:
+// "portpeek  3000/tcp  inspected 12:01:00".
 func (m model) detailTitle() string {
 	t := m.theme
 	d := m.detail
 	q := d.query
-	port := fmt.Sprintf("Port %d/%s", q.Port, q.Protocol)
+	port := fmt.Sprintf("%d/%s", q.Port, q.Protocol)
 	if !t.styled {
-		title := port + "  inspected " + d.inspected.Format(timeLayout)
+		title := "portpeek  " + port + "  inspected " + d.inspected.Format(timeLayout)
 		if d.loading {
-			title = port + "  inspecting…"
+			title = "portpeek  " + port + "  inspecting…"
 		}
 		return fit(title, m.viewWidth())
 	}
@@ -431,15 +430,13 @@ func (m model) detailStatus() string {
 	}
 }
 
-// box frames body in a rounded border of w cells and height+1 rows, the
-// title set into the top edge; the bottom edge is the last of those rows.
-// Body lines are at most w-boxChrome cells; extra lines are dropped and
-// missing ones left blank.
-func (t theme) box(w, height int, title string, body []string) []string {
+// box frames body in a rounded border of w cells and height+1 rows; the
+// bottom edge is the last of those rows. Body lines are at most w-boxChrome
+// cells; extra lines are dropped and missing ones left blank.
+func (t theme) box(w, height int, body []string) []string {
 	inner := w - boxChrome
-	title = cli.Truncate(title, w-boxChrome)
-	rule := strings.Repeat("─", max(w-3-lipgloss.Width(title), 0))
-	lines := []string{t.render(t.border, "╭─") + t.render(t.heading, title) + t.render(t.border, rule+"╮")}
+	rule := strings.Repeat("─", max(w-2, 0))
+	lines := []string{t.render(t.border, "╭"+rule+"╮")}
 
 	rows := max(height-1, 0)
 	edge := t.render(t.border, "│")
@@ -452,71 +449,72 @@ func (t theme) box(w, height int, title string, body []string) []string {
 		lines = append(lines, edge+" "+content+fill+" "+edge)
 	}
 	if height > 0 {
-		lines = append(lines, t.render(t.border, "╰"+strings.Repeat("─", max(w-2, 0))+"╯"))
+		lines = append(lines, t.render(t.border, "╰"+rule+"╯"))
 	}
 	return lines
 }
 
-// Section headings and Process labels of cli.RenderDetail, styled line by
-// line without changing its wording.
-var (
-	detailSections = []string{"Sockets", "Process", "Stop"}
-	processLabels  = []string{"working dir", "command", "name", "user"}
-)
+// Keys of the process lines of cli.RenderDetail, as they start an indented
+// line, padded to the value column.
+var detailKeys = []string{"cmd   ", "cwd   ", "stop  "}
 
-// Indents of cli.RenderDetail: section headings, then their rows.
-const (
-	headingIndent = "  "
-	rowIndent     = "    "
-)
+// detailIndent is the indent of every line inside an owner's block.
+const detailIndent = "  "
+
+// stopSeparator is what joins the two stop commands on the stop line.
+const stopSeparator = "  ·  "
 
 // detailLines fits each line of the CLI's detail text to w cells and styles
-// it by what it is: headline, section heading, field label, exposure, or
-// the completeness hint.
+// it by what it is: the headline, an owner line, a binding, a process line,
+// or the completeness hint. The wording is left as the CLI wrote it.
 func (t theme) detailLines(w int, text, hint string) []string {
 	lines := []string{}
-	section := ""
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
+	for i, line := range strings.Split(text, "\n") {
 		var segs []seg
 		switch {
-		case !t.styled || trimmed == "":
+		case !t.styled || line == "":
 			segs = []seg{plainSeg(line)}
-		case hint != "" && trimmed == hint:
+		case hint != "" && line == hint:
 			segs = []seg{{text: line, style: t.hint}}
-		case !strings.HasPrefix(line, " "):
-			section = ""
+		case i == 0:
 			segs = t.headlineSegs(line)
-		case !strings.HasPrefix(line, rowIndent) && slices.Contains(detailSections, trimmed):
-			section = trimmed
-			segs = []seg{plainSeg(headingIndent), {text: trimmed, style: t.heading}}
+		case !strings.HasPrefix(line, detailIndent):
+			segs = t.ownerSegs(line)
 		default:
-			segs = t.rowSegs(section, line)
+			segs = t.blockSegs(line)
 		}
 		lines = append(lines, t.line(w, segs...))
 	}
 	return lines
 }
 
-// headlineSegs styles "3000/tcp  node  (PID 48213)": the port in the accent
-// colour, the name bold, the PID dim. Other unindented lines stay plain.
+// headlineSegs styles the first line: the port in the accent colour, then
+// "2 processes" dim or the single owner as ownerSegs styles it. A line that
+// does not start with a port, such as the no-match answer, stays plain.
 func (t theme) headlineSegs(line string) []seg {
-	port, rest, _ := strings.Cut(line, " ")
+	port, rest, _ := strings.Cut(line, "  ")
 	if !isPortLabel(port) {
 		return []seg{plainSeg(line)}
 	}
-	segs := []seg{{text: port, style: t.port}}
-	rest = " " + rest
-	switch {
-	case strings.HasSuffix(rest, " processes"):
+	segs := []seg{{text: port, style: t.port}, plainSeg("  ")}
+	if strings.HasSuffix(rest, " processes") {
 		return append(segs, seg{text: rest, style: t.dim})
-	case strings.TrimSpace(rest) == "unknown process":
-		return append(segs, seg{text: rest, style: t.unknown})
 	}
-	if i := strings.LastIndex(rest, "  (PID "); i >= 0 {
-		return append(segs, seg{text: rest[:i], style: t.process}, seg{text: rest[i:], style: t.dim})
+	return append(segs, t.ownerSegs(rest)...)
+}
+
+// ownerSegs styles "node  PID 48213  user kaanemec": the name bold, or
+// muted for an unknown owner, and the PID and user dim.
+func (t theme) ownerSegs(line string) []seg {
+	i := strings.LastIndex(line, "  PID ")
+	if i < 0 {
+		return []seg{plainSeg(line)}
 	}
-	return append(segs, seg{text: rest, style: t.process})
+	name := seg{text: line[:i], style: t.process}
+	if name.text == "unknown process" || strings.HasPrefix(name.text, "name unavailable") {
+		name.style = t.unknown
+	}
+	return []seg{name, {text: line[i:], style: t.dim}}
 }
 
 // isPortLabel reports whether s reads like "3000" or "3000/tcp+udp".
@@ -526,62 +524,45 @@ func isPortLabel(s string) bool {
 	return err == nil
 }
 
-// rowSegs styles a row inside a section: Sockets rows colour the exposure
-// and dim its note, Process rows dim the label and an unavailable value,
-// the Stop row dims "or:".
-func (t theme) rowSegs(section, line string) []seg {
-	switch section {
-	case "Sockets":
-		return t.socketSegs(line)
-	case "Process":
-		rest, ok := strings.CutPrefix(line, rowIndent)
+// blockSegs styles an indented line of an owner's block: a process line has
+// its key dim, an unavailable value muted and the stop separator dim; any
+// other line is a binding, whose exposure is coloured by risk.
+func (t theme) blockSegs(line string) []seg {
+	rest := strings.TrimPrefix(line, detailIndent)
+	for _, key := range detailKeys {
+		value, ok := strings.CutPrefix(rest, key)
 		if !ok {
-			break
+			continue
 		}
-		for _, label := range processLabels {
-			if !strings.HasPrefix(rest, label+" ") {
-				continue
+		segs := []seg{plainSeg(detailIndent), {text: key, style: t.dim}}
+		switch {
+		case strings.HasPrefix(value, "unavailable"):
+			return append(segs, seg{text: value, style: t.unknown})
+		case strings.TrimSpace(key) == "stop":
+			if manual, verified, ok := strings.Cut(value, stopSeparator); ok {
+				return append(segs, plainSeg(manual), seg{text: stopSeparator, style: t.dim}, plainSeg(verified))
 			}
-			value := strings.TrimLeft(rest[len(label):], " ")
-			labelText := rest[:len(rest)-len(value)]
-			valueSeg := plainSeg(value)
-			if strings.HasPrefix(value, "unavailable") {
-				valueSeg.style = t.unknown
-			}
-			return []seg{plainSeg(rowIndent), {text: labelText, style: t.dim}, valueSeg}
 		}
-	case "Stop":
-		if i := strings.Index(line, "or: "); i >= 0 {
-			return []seg{plainSeg(line[:i]), {text: "or:", style: t.dim}, plainSeg(line[i+len("or:"):])}
-		}
+		return append(segs, plainSeg(value))
 	}
-	return []seg{plainSeg(line)}
+	return t.bindingSegs(line)
 }
 
-// socketSegs colours the exposure of a Sockets row by risk and dims the
-// parenthetical note after it.
-func (t theme) socketSegs(line string) []seg {
-	labels := []inspect.Exposure{
+// bindingSegs colours the exposure that ends a binding line by risk:
+// "  127.0.0.1:3000  v4  listening  loopback only".
+func (t theme) bindingSegs(line string) []seg {
+	for _, e := range []inspect.Exposure{
 		inspect.ExposureAllInterfaces,
 		inspect.ExposureLoopback,
 		inspect.ExposureInterface,
 		inspect.ExposureUnknown,
-	}
-	for _, e := range labels {
-		label := cli.ExposureLabel(e)
-		i := strings.Index(line, "  "+label)
-		if e == inspect.ExposureUnknown {
-			i = strings.LastIndex(line, "  "+label)
-		}
+	} {
+		i := strings.LastIndex(line, "  "+cli.ExposureLabel(e))
 		if i < 0 {
 			continue
 		}
 		i += len("  ")
-		exposure, note := line[i:], ""
-		if j := strings.Index(exposure, " ("); j >= 0 {
-			exposure, note = exposure[:j], exposure[j:]
-		}
-		return []seg{plainSeg(line[:i]), {text: exposure, style: t.exposureStyle(e)}, {text: note, style: t.dim}}
+		return []seg{plainSeg(line[:i]), {text: line[i:], style: t.exposureStyle(e)}}
 	}
 	return []seg{plainSeg(line)}
 }

@@ -7,6 +7,20 @@ compatibility policy, described in [docs/json.md](docs/json.md).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-05
+
+### Changed
+
+- Compact detail view in CLI and TUI; command shortened to one line with an
+  argument count; port stated once. `--detail` prints the port and owner on
+  one line (`3000/tcp  node  PID 48213  user kaanemec`), one unlabeled line
+  per binding (`127.0.0.1:3000  v4  listening  loopback only`) and `cmd`,
+  `cwd` and `stop` lines (`stop  kill 48213  ·  portpeek 3000 --stop`), with
+  no section headings or exposure notes. A command that does not fit keeps
+  whole arguments and ends in `…  (+N args)`; the full command is in
+  `--json`. The TUI details pane shows the same text in an untitled box under
+  a `portpeek  3000/tcp  inspected …` title bar, without the `Copy:` line.
+
 ## [1.2.1] - 2026-10-05
 
 ### Added
@@ -89,7 +103,8 @@ First public release: everything below from 1.0.0 to 1.2.0 ships together.
 - Exit codes: `0` at least one owner, `1` no matching socket, `2` invalid
   input, `3` inspection failed.
 
-[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.2
 [1.2.1]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.1
 [1.2.0]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.0
 [0.2.0]: https://github.com/kaanemec/portpeek/compare/v0.1.0...v0.2.0

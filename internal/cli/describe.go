@@ -68,15 +68,15 @@ func (b Binding) Exposure() inspect.Exposure {
 	return inspect.Socket{Address: b.Address}.Exposure()
 }
 
-// familyLabel names the binding's address families.
+// familyLabel names the binding's address families: "v4", "v6" or "v4+v6".
 func (b Binding) familyLabel() string {
 	switch {
 	case b.IPv4 && b.IPv6:
-		return "IPv4+IPv6"
+		return "v4+v6"
 	case b.IPv4:
-		return "IPv4"
+		return "v4"
 	case b.IPv6:
-		return "IPv6"
+		return "v6"
 	default:
 		return "unknown family"
 	}
@@ -111,21 +111,6 @@ func (b Binding) exposureWord() string {
 	return ExposureLabel(e) + " " + b.Address
 }
 
-// exposureNote explains an exposure in a short parenthetical for --detail,
-// or returns "" when there is nothing to add.
-func exposureNote(e inspect.Exposure) string {
-	switch e {
-	case inspect.ExposureLoopback:
-		return "(this machine only)"
-	case inspect.ExposureAllInterfaces:
-		return "(every interface, firewall not checked)"
-	case inspect.ExposureInterface:
-		return "(that address only, firewall not checked)"
-	default:
-		return ""
-	}
-}
-
 // ExposureLabel is the short wording of an exposure: "loopback only", "all
 // interfaces", "interface" or "unknown".
 func ExposureLabel(e inspect.Exposure) string {
@@ -152,11 +137,18 @@ func PIDText(pid int) string {
 // shortCommand shortens a command line for one line of output: argv[0] is
 // reduced to its base name and the arguments are kept as they are.
 func shortCommand(name, command string) string {
-	argv0, args := splitArgv0(name, strings.TrimSpace(command))
+	argv0, args := shortArgv(name, command)
+	return argv0 + args
+}
+
+// shortArgv splits a command line into argv[0], reduced to its base name,
+// and the arguments, which keep their leading space.
+func shortArgv(name, command string) (argv0, args string) {
+	argv0, args = splitArgv0(name, strings.TrimSpace(command))
 	if i := strings.LastIndexAny(argv0, `/\`); i >= 0 && i < len(argv0)-1 {
 		argv0 = argv0[i+1:]
 	}
-	return argv0 + args
+	return argv0, args
 }
 
 // splitArgv0 splits a command line into argv[0] and the rest, which keeps its

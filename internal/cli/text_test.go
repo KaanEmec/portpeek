@@ -299,137 +299,176 @@ some owners unreadable; run with sudo
 	}, textView.compact)
 }
 
+// codexCommand is a long helper command whose argv[0] is an app bundle path
+// with spaces, like the Codex and Chrome helpers that share UDP 5353 on macOS.
+const codexCommand = "/Applications/ChatGPT.app/Contents/Frameworks/Codex (Service).app/Contents/MacOS/Codex (Service) " +
+	"--type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US " +
+	"--service-sandbox-type=network --shared-files --field-trial-handle=1718379636,r,358309612294444706 " +
+	"--variations-seed-version --seatbelt-client=72"
+
+func codexOwner() inspect.Owner {
+	return mdnsOwner(19212, "Codex (Service)", codexCommand)
+}
+
+// stopLine is the --detail stop line of pid on this platform, with the
+// given --stop command.
+func stopLine(pid int, command string) string {
+	return "  stop  " + stopHint(pid) + "  ·  " + command + "\n"
+}
+
 func TestTextView_Detail(t *testing.T) {
 	setPrivileged(t, true)
 	port3000 := inspect.Query{Port: 3000}
+	port5353 := inspect.Query{Port: 5353, Protocol: inspect.UDP}
 
 	runTextCases(t, []textCase{
 		{
 			name:   "single owner",
 			q:      port3000,
 			owners: []inspect.Owner{nodeOwner()},
-			want: `3000/tcp  node  (PID 48213)
-
-  Sockets
-    127.0.0.1:3000   IPv4   listening   loopback only (this machine only)
-
-  Process
-    user          kaanemec
-    command       node server.js
-    working dir   /Users/kaanemec/app
-
-  Stop
-    ` + stopHint(48213) + stopPad(48213) + `or: portpeek 3000 --stop
-`,
+			want: "3000/tcp  node  PID 48213  user kaanemec\n" +
+				"  127.0.0.1:3000  v4  listening  loopback only\n" +
+				"  cmd   node server.js\n" +
+				"  cwd   /Users/kaanemec/app\n" +
+				stopLine(48213, "portpeek 3000 --stop"),
 		},
 		{
 			name:   "several owners",
-			q:      inspect.Query{Port: 5353, Protocol: inspect.UDP},
+			q:      port5353,
 			owners: mdnsOwners()[:2],
-			want: `5353/udp  2 processes
-
-5353/udp  mDNSResponder  (PID 647)
-
-  Sockets
-    *:5353   IPv4+IPv6   bound   all interfaces (every interface, firewall not checked)
-
-  Process
-    user          _mdnsresponder
-    command       /usr/sbin/mDNSResponder
-    working dir   /
-
-  Stop
-    ` + stopHint(647) + stopPad(647) + `or: portpeek 5353 --stop --pid 647 --udp
-
-5353/udp  Codex (Service)  (PID 19212)
-
-  Sockets
-    *:5353   IPv4+IPv6   bound   all interfaces (every interface, firewall not checked)
-
-  Process
-    user          kaanemec
-    command       /Applications/ChatGPT.app/Contents/MacOS/Codex (Service) --type=utility
-    working dir   /
-
-  Stop
-    ` + stopHint(19212) + stopPad(19212) + `or: portpeek 5353 --stop --pid 19212 --udp
-`,
+			want: "5353/udp  2 processes\n" +
+				"\n" +
+				"mDNSResponder  PID 647  user _mdnsresponder\n" +
+				"  *:5353  v4+v6  bound  all interfaces\n" +
+				"  cmd   mDNSResponder\n" +
+				"  cwd   /\n" +
+				stopLine(647, "portpeek 5353 --stop --pid 647 --udp") +
+				"\n" +
+				"Codex (Service)  PID 19212  user kaanemec\n" +
+				"  *:5353  v4+v6  bound  all interfaces\n" +
+				"  cmd   Codex (Service) --type=utility\n" +
+				"  cwd   /\n" +
+				stopLine(19212, "portpeek 5353 --stop --pid 19212 --udp"),
 		},
 		{
 			name:   "mixed tcp and udp",
 			q:      port3000,
 			owners: []inspect.Owner{mixedOwner()},
-			want: `3000/tcp+udp  node  (PID 48213)
-
-  Sockets
-    tcp 127.0.0.1:3000     IPv4   listening   loopback only (this machine only)
-    udp 192.168.1.5:3000   IPv4   bound       interface 192.168.1.5 (that address only, firewall not checked)
-    tcp [::1]:3000         IPv6   listening   loopback only (this machine only)
-
-  Process
-    user          kaanemec
-    command       node server.js
-    working dir   /Users/kaanemec/app
-
-  Stop
-    ` + stopHint(48213) + stopPad(48213) + `or: portpeek 3000 --stop
-`,
+			want: "3000/tcp+udp  node  PID 48213  user kaanemec\n" +
+				"  tcp 127.0.0.1:3000    v4  listening  loopback only\n" +
+				"  udp 192.168.1.5:3000  v4  bound      interface 192.168.1.5\n" +
+				"  tcp [::1]:3000        v6  listening  loopback only\n" +
+				"  cmd   node server.js\n" +
+				"  cwd   /Users/kaanemec/app\n" +
+				stopLine(48213, "portpeek 3000 --stop"),
+		},
+		{
+			name:   "several owners of different protocols",
+			q:      port3000,
+			owners: []inspect.Owner{nodeOwner(), boundTCPOwner(), udpOwner()},
+			want: "3000/tcp+udp  3 processes\n" +
+				"\n" +
+				"node  PID 48213  user kaanemec\n" +
+				"  tcp 127.0.0.1:3000  v4  listening  loopback only\n" +
+				"  cmd   node server.js\n" +
+				"  cwd   /Users/kaanemec/app\n" +
+				stopLine(48213, "portpeek 3000 --stop --pid 48213") +
+				"\n" +
+				"node  PID 48213  user kaanemec\n" +
+				"  tcp 127.0.0.1:3000      v4  bound, not listening  loopback only\n" +
+				"  tcp [fe80::1%lo0]:3000  v6  bound, not listening  interface fe80::1%lo0\n" +
+				"  cmd   node server.js\n" +
+				"  cwd   /Users/kaanemec/app\n" +
+				stopLine(48213, "portpeek 3000 --stop --pid 48213") +
+				"\n" +
+				"node  PID 48213  user kaanemec\n" +
+				"  udp *%eth0:3000  v6  bound  interface eth0\n" +
+				"  cmd   node server.js\n" +
+				"  cwd   /Users/kaanemec/app\n" +
+				stopLine(48213, "portpeek 3000 --stop --pid 48213"),
 		},
 		{
 			name:   "unknown owner",
 			q:      port3000,
 			owners: []inspect.Owner{unknownOwner()},
-			want: `3000/tcp  unknown process
+			want: `3000/tcp  unknown process  PID -  user unavailable (not readable without elevated privileges)
+  127.0.0.1:3000  v4  listening  loopback only
+  cmd   unavailable (not readable without elevated privileges)
+  cwd   unavailable (not readable without elevated privileges)
 
-  Sockets
-    127.0.0.1:3000   IPv4   listening   loopback only (this machine only)
-
-  Process
-    name          unavailable (not readable without elevated privileges)
-    user          unavailable (not readable without elevated privileges)
-    command       unavailable (not readable without elevated privileges)
-    working dir   unavailable (not readable without elevated privileges)
-
-  some owners unreadable; run with sudo
+some owners unreadable; run with sudo
 `,
+		},
+		{
+			name:   "known and unknown owners",
+			q:      port3000,
+			owners: []inspect.Owner{nodeOwner(), unknownOwner()},
+			want: "3000/tcp  2 processes\n" +
+				"\n" +
+				"node  PID 48213  user kaanemec\n" +
+				"  127.0.0.1:3000  v4  listening  loopback only\n" +
+				"  cmd   node server.js\n" +
+				"  cwd   /Users/kaanemec/app\n" +
+				stopLine(48213, "portpeek 3000 --stop --pid 48213") +
+				"\n" +
+				"unknown process  PID -  user unavailable (not readable without elevated privileges)\n" +
+				"  127.0.0.1:3000  v4  listening  loopback only\n" +
+				"  cmd   unavailable (not readable without elevated privileges)\n" +
+				"  cwd   unavailable (not readable without elevated privileges)\n" +
+				"\n" +
+				"some owners unreadable; run with sudo\n",
 		},
 		{
 			name:   "unavailable fields",
 			q:      inspect.Query{Port: 3000, Protocol: inspect.TCP},
 			owners: []inspect.Owner{restrictedOwner()},
-			want: `3000/tcp  name unavailable  (PID 77)
-
-  Sockets
-    *:3000   IPv4   listening   all interfaces (every interface, firewall not checked)
-
-  Process
-    name          unavailable (permission denied)
-    user          unavailable (process exited)
-    command       unavailable (permission denied)
-    working dir   unavailable (permission denied)
-
-  Stop
-    ` + stopHint(77) + stopPad(77) + `or: portpeek 3000 --stop --tcp
-`,
+			want: "3000/tcp  name unavailable (permission denied)  PID 77  user unavailable (process exited)\n" +
+				"  *:3000  v4  listening  all interfaces\n" +
+				"  cmd   unavailable (permission denied)\n" +
+				"  cwd   unavailable (permission denied)\n" +
+				stopLine(77, "portpeek 3000 --stop --tcp"),
 		},
 		{
-			name:   "long command is printed in full at any width",
+			name:   "fields missing without a reason",
+			q:      port3000,
+			owners: []inspect.Owner{bareOwner()},
+			want: "3000/tcp  node  PID 48213\n" +
+				"  127.0.0.1:3000  v4  listening  loopback only\n" +
+				"  cmd   unavailable\n" +
+				"  cwd   unavailable\n" +
+				stopLine(48213, "portpeek 3000 --stop"),
+		},
+		{
+			name:   "long command keeps whole arguments and counts the rest",
+			q:      port5353,
+			owners: []inspect.Owner{codexOwner()},
+			want: "5353/udp  Codex (Service)  PID 19212  user kaanemec\n" +
+				"  *:5353  v4+v6  bound  all interfaces\n" +
+				"  cmd   Codex (Service) --type=utility --utility-sub-type=network.mojom.NetworkService …  (+6 args)\n" +
+				"  cwd   /\n" +
+				stopLine(19212, "portpeek 5353 --stop --udp"),
+		},
+		{
+			name:   "long command at 60 columns",
+			q:      port5353,
+			owners: []inspect.Owner{codexOwner()},
+			width:  60,
+			want: "5353/udp  Codex (Service)  PID 19212  user kaanemec\n" +
+				"  *:5353  v4+v6  bound  all interfaces\n" +
+				"  cmd   Codex (Service) --type=utility …  (+7 args)\n" +
+				"  cwd   /\n" +
+				stopLine(19212, "portpeek 5353 --stop --udp"),
+		},
+		{
+			name:   "narrow terminal cuts argv0 and keeps the stop line whole",
 			q:      port3000,
 			owners: []inspect.Owner{chromeOwner()},
 			width:  40,
-			want: `3000/tcp  Google Chrome Helper  (PID 43947)
-
-  Sockets
-    127.0.0.1:3000   IPv4   listening   loopback only (this machine only)
-
-  Process
-    user          kaanemec
-    command       ` + chromeCommand + `
-    working dir   /
-
-  Stop
-    ` + stopHint(43947) + stopPad(43947) + `or: portpeek 3000 --stop
-`,
+			want: "3000/tcp  Google Chrome Helper  PID 439…\n" +
+				"  127.0.0.1:3000  v4  listening  loopba…\n" +
+				"  cmd   Google Chrome Helper…  (+6 args)\n" +
+				"  cwd   /\n" +
+				stopLine(43947, "portpeek 3000 --stop"),
 		},
 		{
 			name: "no match",
@@ -439,9 +478,70 @@ func TestTextView_Detail(t *testing.T) {
 	}, textView.detail)
 }
 
-// stopPad is the space between the stop hint and its alternative.
-func stopPad(pid int) string {
-	return strings.Repeat(" ", max(stopColumn-len(stopHint(pid)), columnGap))
+// udpOwner holds UDP 3000 on an IPv6 wildcard bound to one device.
+func udpOwner() inspect.Owner {
+	o := nodeOwner()
+	o.Sockets = []inspect.Socket{udpSocket(inspect.IPv6, "*%eth0", 3000)}
+	return o
+}
+
+// bareOwner lacks user, command and working directory without a reason.
+func bareOwner() inspect.Owner {
+	o := nodeOwner()
+	o.Process.User, o.Process.Command, o.Process.WorkingDir = "", "", ""
+	return o
+}
+
+func TestFitCommand(t *testing.T) {
+	t.Parallel()
+
+	// Three 20-cell arguments, so cutting at an argument saves more cells
+	// than the count adds.
+	long := "/usr/bin/node --aaaaaaaaaaaaaaaaaa --bbbbbbbbbbbbbbbbbb --cccccccccccccccccc"
+	tests := []struct {
+		name    string
+		command string
+		width   int
+		want    string
+	}{
+		{name: "fits", command: "/usr/bin/node a b", width: 20, want: "node a b"},
+		{name: "exactly fits", command: "node a b", width: 8, want: "node a b"},
+		{name: "last argument left out", command: long, width: 60, want: "node --aaaaaaaaaaaaaaaaaa --bbbbbbbbbbbbbbbbbb …  (+1 arg)"},
+		{name: "whole arguments only", command: long, width: 50, want: "node --aaaaaaaaaaaaaaaaaa …  (+2 args)"},
+		{name: "argv0 alone", command: long, width: 20, want: "node …  (+3 args)"},
+		{name: "argv0 is cut beside the count", command: long, width: 15, want: "nod…  (+3 args)"},
+		{name: "no room for the count", command: long, width: 12, want: "node --aaaa…"},
+		{name: "no arguments", command: "averyveryverylongname", width: 10, want: "averyvery…"},
+		{name: "control characters are escaped", command: "node \x1b[2J", width: 20, want: `node \x1b[2J`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := fitCommand("", tt.command, tt.width)
+			if got != tt.want {
+				t.Errorf("fitCommand(%q, %d) = %q, want %q", tt.command, tt.width, got, tt.want)
+			}
+			if w := len([]rune(got)); w > tt.width {
+				t.Errorf("fitCommand(%q, %d) is %d cells wide", tt.command, tt.width, w)
+			}
+		})
+	}
+}
+
+// TestTextView_DetailStopLine checks that the stop line starts with the
+// platform's manual stop command, kill on Unix and taskkill on Windows.
+func TestTextView_DetailStopLine(t *testing.T) {
+	setPrivileged(t, true)
+
+	got := newTextView(defaultWidth, false).detail(inspect.Query{Port: 3000}, []inspect.Owner{nodeOwner()})
+	want := "\n  stop  " + stopHint(48213) + "  ·  portpeek 3000 --stop\n"
+	if !strings.HasSuffix(got, want) {
+		t.Errorf("detail does not end with the stop line %q:\n%s", want, got)
+	}
+	if !strings.HasPrefix(stopHint(48213), "kill ") && !strings.HasPrefix(stopHint(48213), "taskkill /PID ") {
+		t.Errorf("stopHint(48213) = %q, want kill or taskkill", stopHint(48213))
+	}
 }
 
 func TestTextView_HiddenSocketsHint(t *testing.T) {
@@ -479,7 +579,7 @@ func TestTextView_HiddenSocketsHint(t *testing.T) {
 		{
 			name: "detail view ends with the hint",
 			got:  view.detail(q, []inspect.Owner{nodeOwner()}),
-			want: view.unlimited().detailBody(q) + "\n  other users' sockets hidden; run with sudo\n",
+			want: view.detailBody(q) + "\nother users' sockets hidden; run with sudo\n",
 		},
 	}
 	for _, tt := range tests {
@@ -494,7 +594,7 @@ func TestTextView_HiddenSocketsHint(t *testing.T) {
 // detailBody is the single node owner's detail block followed by a blank
 // line, as it precedes a hint.
 func (v textView) detailBody(q inspect.Query) string {
-	return strings.Join(v.detailOwner(q, nodeOwner(), false), "\n") + "\n"
+	return strings.Join(v.detailOwner(q, nodeOwner(), false, false), "\n") + "\n"
 }
 
 var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -589,7 +689,7 @@ func TestRenderText_IsPlainDefaultView(t *testing.T) {
 	if got, want := RenderText(q, owners), newTextView(defaultWidth, false).compact(q, owners); got != want {
 		t.Errorf("RenderText differs from the default view\n got:\n%s\nwant:\n%s", got, want)
 	}
-	if got, want := RenderDetail(q, owners), newTextView(defaultWidth, false).detail(q, owners); got != want {
+	if got, want := RenderDetail(q, owners, 60), newTextView(60, false).detail(q, owners); got != want {
 		t.Errorf("RenderDetail differs from the detail view\n got:\n%s\nwant:\n%s", got, want)
 	}
 }

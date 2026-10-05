@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -28,8 +27,6 @@ const (
 	maxNameWidth = 24
 	// minBindingsWidth is the least room the table keeps for bindings.
 	minBindingsWidth = 12
-	// stopColumn is where the --stop alternative starts in the Stop section.
-	stopColumn = 20
 )
 
 // Styling is applied only when stdout is a colour-capable terminal; see
@@ -101,13 +98,6 @@ func (v textView) dim(s string) string {
 		return s
 	}
 	return dimStyle.Render(s)
-}
-
-// unlimited returns v without a width limit, for --detail, where nothing is
-// cut and the terminal wraps long lines.
-func (v textView) unlimited() textView {
-	v.width = math.MaxInt
-	return v
 }
 
 // write writes the default or detail view of a result to w.
@@ -206,7 +196,8 @@ func (v textView) compact(q inspect.Query, owners []inspect.Owner) string {
 func (v textView) compactOwner(q inspect.Query, o inspect.Owner) []string {
 	p := o.Process
 	lines := []string{v.ownerHeadline(q, o)}
-	lines = append(lines, v.align(indent, v.bindingRows(o.Sockets, false))...)
+	mixed := len(protocols(o.Sockets)) > 1
+	lines = append(lines, v.align(indent, v.bindingRows(o.Sockets, mixed, false))...)
 
 	// An unknown owner has no PID, and "kill 0" would signal the user's own
 	// process group, so neither a command nor a stop line is printed; the
@@ -284,71 +275,147 @@ func (v textView) compactTable(q inspect.Query, owners []inspect.Owner) []string
 	return append(headline, v.align(indent, cells, columnGap, pidGap)...)
 }
 
-// detail is the --detail view: every owner with its sockets, process details
-// and stop commands in labelled sections. Nothing is cut.
+// detail is the --detail view. One owner is a single block led by the port;
+// several owners get a "5353/udp  2 processes" headline and a block each,
+// separated by blank lines. A block is the owner line, one line per binding
+// and the cmd, cwd and stop lines. The owner line, bindings and command are
+// cut to the view's width; the working directory and stop line are kept
+// whole so they can be copied.
 func (v textView) detail(q inspect.Query, owners []inspect.Owner) string {
 	if len(owners) == 0 {
 		return v.compact(q, owners)
 	}
 
-	u := v.unlimited()
+	all := []inspect.Socket{}
+	for _, o := range owners {
+		all = append(all, o.Sockets...)
+	}
+	mixed := len(protocols(all)) > 1
+	several := len(owners) > 1
+
 	blocks := []string{}
-	if len(owners) > 1 {
-		all := []inspect.Socket{}
-		for _, o := range owners {
-			all = append(all, o.Sockets...)
-		}
-		blocks = append(blocks, u.align("", [][]cell{{
+	if several {
+		blocks = append(blocks, v.align("", [][]cell{{
 			{text: portLabel(q, all), style: v.bold},
 			plain(strconv.Itoa(len(owners)) + " processes"),
 		}}, 2)[0])
 	}
 	for _, o := range owners {
-		blocks = append(blocks, strings.Join(u.detailOwner(q, o, len(owners) > 1), "\n"))
+		blocks = append(blocks, strings.Join(v.detailOwner(q, o, several, mixed), "\n"))
 	}
 	if hint := completenessHint(owners); hint != "" {
-		blocks = append(blocks, indent+v.dim(hint))
+		blocks = append(blocks, v.line("", hint, v.dim))
 	}
 	return strings.Join(blocks, "\n\n") + "\n"
 }
 
+// Keys of the --detail process lines, padded to keyWidth columns.
+const (
+	keyWidth   = 6
+	commandKey = "cmd"
+	dirKey     = "cwd"
+	stopKey    = "stop"
+	// stopSeparator joins the manual stop command and the --stop one.
+	stopSeparator = "  ·  "
+)
+
 // detailOwner is one owner's block in the --detail view. several says the
-// port has more than one owner, so the --stop command needs --pid.
-func (v textView) detailOwner(q inspect.Query, o inspect.Owner, several bool) []string {
-	const sectionIndent = indent + indent
+// port has more than one owner, so the port is left to the shared headline
+// and the --stop command needs --pid; mixed says the bindings need their
+// protocol.
+func (v textView) detailOwner(q inspect.Query, o inspect.Owner, several, mixed bool) []string {
 	p := o.Process
+	lines := []string{v.detailHeadline(q, o, several)}
+	lines = append(lines, v.align(indent, v.bindingRows(o.Sockets, mixed, true), 2, 2, 2)...)
 
-	lines := []string{v.ownerHeadline(q, o), "", indent + v.bold("Sockets")}
-	sockets := v.bindingRows(o.Sockets, true)
-	lines = append(lines, v.align(sectionIndent, sockets)...)
-
-	lines = append(lines, "", indent+v.bold("Process"))
-	fields := [][]cell{}
-	if p.Name == "" {
-		fields = append(fields, v.field("name", processField(p, inspect.FieldName, "")))
+	command := processField(p, inspect.FieldCommand, "")
+	if p.Command != "" {
+		command = fitCommand(p.Name, p.Command, v.width-len(indent)-keyWidth)
 	}
-	fields = append(fields,
-		v.field("user", processField(p, inspect.FieldUser, p.User)),
-		v.field("command", processField(p, inspect.FieldCommand, p.Command)),
-		v.field("working dir", processField(p, inspect.FieldWorkingDir, p.WorkingDir)),
+	lines = append(lines,
+		v.keyLine(commandKey, command),
+		v.keyLine(dirKey, processField(p, inspect.FieldWorkingDir, p.WorkingDir)),
 	)
-	lines = append(lines, v.align(sectionIndent, fields)...)
 
+	// An unknown owner has no PID, and "kill 0" would signal the user's own
+	// process group, so it gets no stop line.
 	if isUnknownOwner(p) {
 		return lines
 	}
-	hint := stopHint(p.PID)
-	pad := strings.Repeat(" ", max(stopColumn-lipgloss.Width(hint), columnGap))
-	return append(lines,
-		"",
-		indent+v.bold("Stop"),
-		sectionIndent+hint+pad+v.dim("or:")+" "+stopCommand(q, p.PID, several),
-	)
+	return append(lines, v.keyLine(stopKey, stopHint(p.PID)+stopSeparator+stopCommand(q, p.PID, several)))
 }
 
-// field is a labelled row of the Process section.
-func (v textView) field(label, value string) []cell {
-	return []cell{{text: label, style: v.dim}, plain(value)}
+// detailHeadline is the owner line of a --detail block: "node  PID 48213
+// user kaanemec", led by the port when the port has a single owner. The user
+// is left out when it is missing without a reason.
+func (v textView) detailHeadline(q inspect.Query, o inspect.Owner, several bool) string {
+	p := o.Process
+	cells := []cell{}
+	if !several {
+		cells = append(cells, cell{text: portLabel(q, o.Sockets), style: v.bold})
+	}
+	name := ownerName(p)
+	if p.Name == "" && !isUnknownOwner(p) {
+		name = "name " + processField(p, inspect.FieldName, "")
+	}
+	cells = append(cells,
+		cell{text: name, style: v.bold},
+		cell{text: "PID " + PIDText(p.PID), style: v.dim},
+	)
+	if p.User != "" || p.Unavailable[inspect.FieldUser] != "" {
+		cells = append(cells, cell{text: "user " + processField(p, inspect.FieldUser, p.User), style: v.dim})
+	}
+	return v.align("", [][]cell{cells}, 2, 2, 2)[0]
+}
+
+// keyLine is an indented process line with its key dim and padded to
+// keyWidth: "  cwd   /Users/kaanemec/app". The value is not cut.
+func (v textView) keyLine(key, value string) string {
+	return indent + v.dim(key) + strings.Repeat(" ", max(keyWidth-len(key), 1)) + value
+}
+
+// fitCommand shortens a command line as the default view does, argv[0] to
+// its base name, and fits it into w cells. A command that is too long keeps
+// as many whole arguments as fit and ends in " …" and the count of the
+// arguments left out: "node --a --b …  (+3 args)".
+func fitCommand(name, command string, w int) string {
+	argv0, rest := shortArgv(name, command)
+	short := EscapeControls(argv0 + rest)
+	if lipgloss.Width(short) <= w {
+		return short
+	}
+
+	words := []string{EscapeControls(argv0)}
+	for _, arg := range strings.FieldsFunc(rest, func(r rune) bool { return r == ' ' }) {
+		words = append(words, EscapeControls(arg))
+	}
+	args := len(words) - 1
+	for shown := args - 1; shown >= 0; shown-- {
+		text := strings.Join(words[:shown+1], " ") + " …" + argsCount(args-shown)
+		if lipgloss.Width(text) <= w {
+			return text
+		}
+	}
+
+	// Not even argv[0] fits beside the count, so argv[0] itself is cut.
+	count := argsCount(args)
+	if room := w - lipgloss.Width(count); room > 1 {
+		return Truncate(strings.Join(words, " "), room) + count
+	}
+	return Truncate(short, w)
+}
+
+// argsCount is the suffix that counts the arguments a cut command left out,
+// or "" when none were.
+func argsCount(n int) string {
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "  (+1 arg)"
+	default:
+		return "  (+" + strconv.Itoa(n) + " args)"
+	}
 }
 
 // ownerHeadline names the port and its owner: "3000/tcp  node  (PID 48213)".
@@ -364,24 +431,19 @@ func (v textView) ownerHeadline(q inspect.Query, o inspect.Owner) string {
 	return v.align("", [][]cell{cells}, 2, 2)[0]
 }
 
-// bindingRows describes an owner's collapsed bindings, one row each: address,
-// state and exposure, plus the family and an exposure note in detail. The
-// protocol leads the address when the owner holds more than one.
-func (v textView) bindingRows(sockets []inspect.Socket, detail bool) [][]cell {
-	mixed := len(protocols(sockets)) > 1
+// bindingRows describes collapsed bindings, one row each: address, state and
+// exposure, with the family as its own column in detail. The protocol leads
+// the address when mixed is set.
+func (v textView) bindingRows(sockets []inspect.Socket, mixed, detail bool) [][]cell {
 	rows := [][]cell{}
 	for _, b := range CollapseBindings(sockets) {
-		exposure := b.exposureWord()
 		row := []cell{plain(bindingText(b, mixed))}
 		if detail {
-			// The family column says IPv4+IPv6, so the address goes without
-			// the dual-stack marker.
+			// The family column names both families, so the address goes
+			// without the dual-stack marker.
 			row = []cell{plain(withProtocol(b, b.hostPort(), mixed)), plain(b.familyLabel())}
-			if note := exposureNote(b.Exposure()); note != "" {
-				exposure += " " + note
-			}
 		}
-		rows = append(rows, append(row, plain(b.stateLabel()), plain(exposure)))
+		rows = append(rows, append(row, plain(b.stateLabel()), plain(b.exposureWord())))
 	}
 	return rows
 }

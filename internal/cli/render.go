@@ -46,11 +46,14 @@ func RenderText(q inspect.Query, owners []inspect.Owner) string {
 	return plainView.compact(q, owners)
 }
 
-// RenderDetail returns the --detail text answer for a query, unstyled:
-// every owner with its sockets, process details and stop commands in
-// labelled sections. Nothing is cut.
-func RenderDetail(q inspect.Query, owners []inspect.Owner) string {
-	return plainView.detail(q, owners)
+// RenderDetail returns the --detail text answer for a query, unstyled, laid
+// out for width columns (at least 40): the port once, then per owner its
+// name, PID and user, one line per binding, and the cmd, cwd and stop lines,
+// followed by the completeness hint when the answer may be incomplete. The
+// command is shortened to one line; the working directory and stop line are
+// never cut. The terminal interface shows it in its details pane.
+func RenderDetail(q inspect.Query, owners []inspect.Owner, width int) string {
+	return newTextView(width, false).detail(q, owners)
 }
 
 // CompletenessHint returns the one-line hint, without a trailing newline,

@@ -42,7 +42,7 @@ refreshing overview of every local port.
 Options:
   --tcp        only look at TCP sockets
   --udp        only look at UDP sockets
-  --detail     show everything known: every socket, user, full command,
+  --detail     show everything known: every socket, user, command,
                working directory and stop commands
   --json       print machine-readable JSON (schema 1); --detail is ignored
   --stop       send SIGTERM to the process using the port, after confirmation

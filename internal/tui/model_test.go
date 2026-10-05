@@ -639,7 +639,7 @@ func TestModel_Details(t *testing.T) {
 		{
 			name:     "owner",
 			owners:   []inspect.Owner{nodeOwner()},
-			wantText: cli.RenderDetail(inspect.Query{Port: 3000, Protocol: inspect.TCP}, []inspect.Owner{nodeOwner()}),
+			wantText: cli.RenderDetail(inspect.Query{Port: 3000, Protocol: inspect.TCP}, []inspect.Owner{nodeOwner()}, 140),
 		},
 		{
 			name:     "port gone since the list",
@@ -655,7 +655,7 @@ func TestModel_Details(t *testing.T) {
 			f.press(t, "s", "/", "n", "o", "d", "enter") // sorted by process, filtered to node
 
 			cmd := f.press(t, "enter")
-			if !strings.Contains(f.screen(), "Port 3000/tcp  inspecting…") {
+			if !strings.Contains(f.screen(), "portpeek  3000/tcp  inspecting…") {
 				t.Errorf("view lacks the inspecting state:\n%s", f.screen())
 			}
 			f.sendAll(t, cmd)
@@ -670,7 +670,7 @@ func TestModel_Details(t *testing.T) {
 					t.Errorf("details lack CLI line %q:\n%s", line, screen)
 				}
 			}
-			for _, line := range []string{"Port 3000/tcp  inspected 12:01:00", "Copy: portpeek 3000 --tcp", "k: stop  Esc: back"} {
+			for _, line := range []string{"portpeek  3000/tcp  inspected 12:01:00", "k: stop  Esc: back"} {
 				if !strings.Contains(screen, line) {
 					t.Errorf("details lack %q:\n%s", line, screen)
 				}
