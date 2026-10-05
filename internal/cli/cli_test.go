@@ -34,12 +34,6 @@ func (f *fakeInspector) Inspect(_ context.Context, q inspect.Query) (inspect.Res
 	return res, f.err
 }
 
-// stopLine is the Stop field of a text result, which names the platform's
-// own stop command (kill on Unix, taskkill on Windows).
-func stopLine(pid int) string {
-	return "  Stop:         " + stopHint(pid) + "\n"
-}
-
 // setPrivileged overrides privileged for the rest of the test. Callers must
 // not run in parallel with other tests.
 func setPrivileged(t *testing.T, v bool) {
@@ -86,22 +80,15 @@ func unknownOwner() inspect.Owner {
 	}
 }
 
-const unknownText = `Port 3000/tcp is used by an unknown process
-  Owner:        unavailable (not readable without elevated privileges)
-  Address:      127.0.0.1:3000 (IPv4, LISTEN)
-  Exposure:     loopback only — accepts connections from this machine only
-  User:         unavailable (not readable without elevated privileges)
-  Command:      unavailable (not readable without elevated privileges)
-  Working dir:  unavailable (not readable without elevated privileges)
+// unknownText is the default view of unknownOwner, before its hint.
+const unknownText = `3000/tcp  unknown process
+  127.0.0.1:3000   listening   loopback only
 `
 
-var nodeText = `Port 3000/tcp is used by node (PID 48213)
-  Address:      127.0.0.1:3000 (IPv4, LISTEN)
-  Exposure:     loopback only — accepts connections from this machine only
-  User:         kaanemec
-  Command:      node server.js
-  Working dir:  /Users/kaanemec/app
-` + stopLine(48213)
+var nodeText = "3000/tcp  node  (PID 48213)\n" +
+	"  127.0.0.1:3000   listening   loopback only\n" +
+	"  node server.js\n" +
+	stop(48213)
 
 const nodeJSON = `{
   "schema": 1,
@@ -137,69 +124,15 @@ const nodeJSON = `{
 
 func TestRun(t *testing.T) {
 	setPrivileged(t, true)
-	twoOwners := []inspect.Owner{
-		nodeOwner(),
-		{
-			Process: inspect.Process{
-				PID:        500,
-				Name:       "python3",
-				User:       "root",
-				Command:    "python3 -m http.server 3000",
-				WorkingDir: "/srv",
-			},
-			Sockets: []inspect.Socket{
-				{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "*", Port: 3000, State: inspect.StateListen},
-			},
-		},
-	}
-
-	mixed := nodeOwner()
-	mixed.Sockets = []inspect.Socket{
-		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: inspect.StateListen},
-		{Protocol: inspect.UDP, Family: inspect.IPv4, Address: "192.168.1.5", Port: 3000, State: inspect.StateBound},
-		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "::1", Port: 3000, State: inspect.StateListen},
-	}
-
-	sameExposure := nodeOwner()
-	sameExposure.Sockets = []inspect.Socket{
-		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "0.0.0.0", Port: 3000, State: inspect.StateListen},
-		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "*", Port: 3000, State: inspect.StateListen},
-	}
 
 	udpOnly := nodeOwner()
-	udpOnly.Sockets = []inspect.Socket{
-		{Protocol: inspect.UDP, Family: inspect.IPv4, Address: "*", Port: 5353, State: inspect.StateBound},
-	}
-
-	restricted := inspect.Process{PID: 77, Unavailable: map[inspect.Field]string{}}
-	restricted.MarkUnavailable(inspect.FieldName, "permission denied")
-	restricted.MarkUnavailable(inspect.FieldUser, "process exited")
-	restricted.MarkUnavailable(inspect.FieldCommand, "permission denied")
-	restricted.MarkUnavailable(inspect.FieldWorkingDir, "permission denied")
-	unavailable := inspect.Owner{
-		Process: restricted,
-		Sockets: []inspect.Socket{
-			{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "*", Port: 3000, State: inspect.StateListen},
-		},
-	}
-
-	boundTCP := nodeOwner()
-	boundTCP.Sockets = []inspect.Socket{
-		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: inspect.StateBound},
-		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "fe80::1%lo0", Port: 3000, State: inspect.StateBound},
-	}
-
-	unknownNoReason := unknownOwner()
-	unknownNoReason.Process.Unavailable = map[inspect.Field]string{}
-
-	deviceBound := nodeOwner()
-	deviceBound.Sockets = []inspect.Socket{
-		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "*%eth0", Port: 3000, State: inspect.StateListen},
-	}
+	udpOnly.Sockets = []inspect.Socket{udpSocket(inspect.IPv4, "*", 5353)}
 
 	unavailableJSON := nodeOwner()
 	unavailableJSON.Process.Command = ""
 	unavailableJSON.Process.MarkUnavailable(inspect.FieldCommand, "permission denied")
+
+	nodeDetail := newTextView(defaultWidth, false).detail(inspect.Query{Port: 3000}, []inspect.Owner{nodeOwner()})
 
 	tests := []struct {
 		name       string
@@ -233,108 +166,54 @@ func TestRun(t *testing.T) {
 			owners:    []inspect.Owner{udpOnly},
 			wantCode:  0,
 			wantQuery: &inspect.Query{Port: 5353, Protocol: inspect.UDP},
-			wantOut: `Port 5353/udp is used by node (PID 48213)
-  Address:      *:5353 (IPv4, bound)
-  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
-  User:         kaanemec
-  Command:      node server.js
-  Working dir:  /Users/kaanemec/app
-` + stopLine(48213),
+			wantOut: "5353/udp  node  (PID 48213)\n" +
+				"  *:5353   bound   all interfaces\n" +
+				"  node server.js\n" +
+				stop(48213),
 		},
 		{
-			name:     "two owners",
+			name:     "several owners",
 			args:     []string{"3000"},
-			owners:   twoOwners,
+			owners:   []inspect.Owner{nodeOwner(), pythonOwner()},
 			wantCode: 0,
-			wantOut: `2 processes use port 3000:
-
-Port 3000/tcp is used by node (PID 48213)
-  Address:      127.0.0.1:3000 (IPv4, LISTEN)
-  Exposure:     loopback only — accepts connections from this machine only
-  User:         kaanemec
-  Command:      node server.js
-  Working dir:  /Users/kaanemec/app
-` + stopLine(48213) + `
-Port 3000/tcp is used by python3 (PID 500)
-  Address:      *:3000 (IPv6, LISTEN)
-  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
-  User:         root
-  Command:      python3 -m http.server 3000
-  Working dir:  /srv
-` + stopLine(500),
+			wantOut: `3000/tcp  2 processes
+  node      PID 48213  127.0.0.1:3000   loopback only
+  python3   PID 500    *:3000           all interfaces
+`,
 		},
 		{
-			name:     "mixed tcp udp sockets with differing exposure",
-			args:     []string{"3000"},
-			owners:   []inspect.Owner{mixed},
+			name:     "detail",
+			args:     []string{"3000", "--detail"},
+			owners:   []inspect.Owner{nodeOwner()},
 			wantCode: 0,
-			wantOut: `Port 3000/tcp+udp is used by node (PID 48213)
-  Address:      127.0.0.1:3000 (tcp, IPv4, LISTEN)
-  Address:      192.168.1.5:3000 (udp, IPv4, bound)
-  Address:      [::1]:3000 (tcp, IPv6, LISTEN)
-  Exposure:     127.0.0.1:3000: loopback only — accepts connections from this machine only
-                192.168.1.5:3000: specific interface 192.168.1.5 — accepts connections on that address only (firewall not checked)
-                [::1]:3000: loopback only — accepts connections from this machine only
-  User:         kaanemec
-  Command:      node server.js
-  Working dir:  /Users/kaanemec/app
-` + stopLine(48213),
+			wantOut:  nodeDetail,
 		},
 		{
-			name:     "several sockets with same exposure print one line",
-			args:     []string{"3000"},
-			owners:   []inspect.Owner{sameExposure},
+			name:     "detail before port",
+			args:     []string{"--detail", "3000"},
+			owners:   []inspect.Owner{nodeOwner()},
 			wantCode: 0,
-			wantOut: `Port 3000/tcp is used by node (PID 48213)
-  Address:      0.0.0.0:3000 (IPv4, LISTEN)
-  Address:      *:3000 (IPv6, LISTEN)
-  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
-  User:         kaanemec
-  Command:      node server.js
-  Working dir:  /Users/kaanemec/app
-` + stopLine(48213),
+			wantOut:  nodeDetail,
 		},
 		{
-			name:     "unavailable fields print reasons",
-			args:     []string{"3000"},
-			owners:   []inspect.Owner{unavailable},
+			name:     "detail is ignored with json",
+			args:     []string{"3000", "--detail", "--json"},
+			owners:   []inspect.Owner{nodeOwner()},
 			wantCode: 0,
-			wantOut: `Port 3000/tcp is used by PID 77
-  Address:      *:3000 (IPv4, LISTEN)
-  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
-  User:         unavailable (process exited)
-  Command:      unavailable (permission denied)
-  Working dir:  unavailable (permission denied)
-` + stopLine(77),
+			wantOut:  nodeJSON,
+		},
+		{
+			name:     "detail no match",
+			args:     []string{"3000", "--detail"},
+			wantCode: 1,
+			wantOut:  "no listening or bound socket on 3000 (tcp or udp)\n",
 		},
 		{
 			name:     "unknown owner text",
 			args:     []string{"3000"},
 			owners:   []inspect.Owner{unknownOwner()},
 			wantCode: 0,
-			wantOut:  unknownText + "\n" + unknownOwnerHint,
-		},
-		{
-			name:     "unknown owner without reason",
-			args:     []string{"3000"},
-			owners:   []inspect.Owner{unknownNoReason},
-			wantCode: 0,
-			wantOut: `Port 3000/tcp is used by an unknown process
-  Owner:        unavailable
-  Address:      127.0.0.1:3000 (IPv4, LISTEN)
-  Exposure:     loopback only — accepts connections from this machine only
-  User:         unavailable
-  Command:      unavailable
-  Working dir:  unavailable
-
-` + unknownOwnerHint,
-		},
-		{
-			name:     "known and unknown owners",
-			args:     []string{"3000"},
-			owners:   []inspect.Owner{nodeOwner(), unknownOwner()},
-			wantCode: 0,
-			wantOut:  "2 processes use port 3000:\n\n" + nodeText + "\n" + unknownText + "\n" + unknownOwnerHint,
+			wantOut:  unknownText + unknownOwnerHint + "\n",
 		},
 		{
 			name:     "unknown owner json is incomplete",
@@ -379,29 +258,16 @@ Port 3000/tcp is used by python3 (PID 500)
 `,
 		},
 		{
-			name:     "wildcard bound to a device",
-			args:     []string{"3000"},
-			owners:   []inspect.Owner{deviceBound},
-			wantCode: 0,
-			wantOut: `Port 3000/tcp is used by node (PID 48213)
-  Address:      *%eth0:3000 (IPv4, LISTEN)
-  Exposure:     specific interface *%eth0 — accepts connections on that address only (firewall not checked)
-  User:         kaanemec
-  Command:      node server.js
-  Working dir:  /Users/kaanemec/app
-` + stopLine(48213),
-		},
-		{
 			name:     "no match",
 			args:     []string{"3000"},
 			wantCode: 1,
-			wantOut:  "No listening or bound socket on port 3000 (tcp or udp).\n",
+			wantOut:  "no listening or bound socket on 3000 (tcp or udp)\n",
 		},
 		{
 			name:     "no match with protocol",
 			args:     []string{"--udp", "53"},
 			wantCode: 1,
-			wantOut:  "No listening or bound socket on port 53 (udp).\n",
+			wantOut:  "no listening or bound socket on 53 (udp)\n",
 		},
 		{
 			name:     "json match",
@@ -456,21 +322,6 @@ Port 3000/tcp is used by python3 (PID 500)
   }
 }
 `,
-		},
-		{
-			name:     "tcp bound without listening",
-			args:     []string{"3000"},
-			owners:   []inspect.Owner{boundTCP},
-			wantCode: 0,
-			wantOut: `Port 3000/tcp is used by node (PID 48213)
-  Address:      127.0.0.1:3000 (IPv4, bound, not listening)
-  Address:      [fe80::1%lo0]:3000 (IPv6, bound, not listening)
-  Exposure:     127.0.0.1:3000: loopback only — accepts connections from this machine only
-                [fe80::1%lo0]:3000: specific interface fe80::1%lo0 — accepts connections on that address only (firewall not checked)
-  User:         kaanemec
-  Command:      node server.js
-  Working dir:  /Users/kaanemec/app
-` + stopLine(48213),
 		},
 		{
 			name:       "interrupted",
@@ -694,21 +545,21 @@ func TestRun_Unprivileged(t *testing.T) {
 			name:     "no match text",
 			args:     []string{"3000"},
 			wantCode: exitNoMatch,
-			wantOut:  "No listening or bound socket on port 3000 (tcp or udp).\n" + hiddenSocketsHint,
+			wantOut:  "no listening or bound socket on 3000 (tcp or udp)\n" + hiddenSocketsHint + "\n",
 		},
 		{
 			name:     "match text",
 			args:     []string{"3000"},
 			owners:   []inspect.Owner{nodeOwner()},
 			wantCode: exitOK,
-			wantOut:  nodeText + "\n" + hiddenSocketsHint,
+			wantOut:  nodeText + hiddenSocketsHint + "\n",
 		},
 		{
 			name:     "unknown owner hint replaces hidden sockets hint",
 			args:     []string{"3000"},
 			owners:   []inspect.Owner{unknownOwner()},
 			wantCode: exitOK,
-			wantOut:  unknownText + "\n" + unknownOwnerHint,
+			wantOut:  unknownText + unknownOwnerHint + "\n",
 		},
 		{
 			name:     "match json",

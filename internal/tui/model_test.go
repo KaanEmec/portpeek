@@ -240,7 +240,7 @@ func stripANSI(s string) string {
 func visibleKeys(m model) []string {
 	keys := make([]string, 0, len(m.visible))
 	for _, r := range m.visible {
-		keys = append(keys, r.binding()+"/"+string(r.proto)+" "+r.process)
+		keys = append(keys, r.bind.String()+"/"+string(r.bind.Protocol)+" "+r.process)
 	}
 	return keys
 }
@@ -251,7 +251,7 @@ func selectedBinding(t *testing.T, m model) string {
 	if !ok {
 		t.Fatal("no row selected")
 	}
-	return r.binding()
+	return r.bind.String()
 }
 
 func TestModel_Loading(t *testing.T) {
@@ -289,9 +289,9 @@ func TestModel_InitialLoad(t *testing.T) {
 		"  Port   Proto  Binding         Process",
 		"> 3000   tcp    127.0.0.1:3000  node",
 		"  5353   udp    0.0.0.0:5353    unknown                                      -        all interfaces",
-		"  5432   tcp    [::1]:5432      postgres                                     700      loopback",
+		"  5432   tcp    [::1]:5432      postgres                                     700      loopback only",
 		// The CLI's hint, because an owner is unknown.
-		"Owner details for some sockets are not readable without elevated privileges (try sudo).",
+		"some owners unreadable; run with sudo",
 		"↑/↓: move  enter: details  /: search  s: sort  r: refresh  p: pause  q: quit",
 	} {
 		if !strings.Contains(screen, line) {
@@ -314,7 +314,7 @@ func TestModel_CompletenessHintMatchesCLI(t *testing.T) {
 	if hint != "" && !strings.Contains(screen, hint) {
 		t.Errorf("view lacks the CLI hint %q:\n%s", hint, screen)
 	}
-	if hint == "" && strings.Contains(screen, "elevated privileges") {
+	if hint == "" && strings.Contains(screen, "run with sudo") {
 		t.Errorf("view shows a hint for a complete answer:\n%s", screen)
 	}
 }
@@ -632,11 +632,11 @@ func TestModel_Details(t *testing.T) {
 		{
 			name:     "owner",
 			owners:   []inspect.Owner{nodeOwner()},
-			wantText: cli.RenderText(inspect.Query{Port: 3000, Protocol: inspect.TCP}, []inspect.Owner{nodeOwner()}),
+			wantText: cli.RenderDetail(inspect.Query{Port: 3000, Protocol: inspect.TCP}, []inspect.Owner{nodeOwner()}),
 		},
 		{
 			name:     "port gone since the list",
-			wantText: "No listening or bound socket on port 3000 (tcp).",
+			wantText: "no listening or bound socket on 3000 (tcp)",
 		},
 	}
 	for _, tt := range tests {

@@ -7,6 +7,21 @@ compatibility policy, described in [docs/json.md](docs/json.md).
 
 ## [Unreleased]
 
+### Added (1.2.0)
+
+- Compact default text output: a headline per port, one line per binding
+  (IPv4 and IPv6 of the same address collapse to `(v4+v6)`), the command
+  shortened to the terminal width and a `stop:` line; several processes on a
+  port print one aligned row each. Hints shrink to one short line such as
+  `other users' sockets hidden; run with sudo`.
+- `--detail`: every socket, user, full command, working directory and stop
+  commands in aligned Sockets / Process / Stop sections. Ignored with
+  `--json`. The `tui` details pane shows the same view, and its table uses
+  the same binding and exposure wording (`*:5000 (v4+v6)`, `loopback only`).
+- Bold and dim text on terminals only (never when piped, with `NO_COLOR` or
+  `TERM=dumb`); lines are cut to the terminal width, 100 columns when piped.
+  JSON output and exit codes are unchanged.
+
 ### Added (1.1.0)
 
 - `portpeek tui`: searchable, auto-refreshing table of every local listening

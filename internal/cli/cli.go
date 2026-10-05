@@ -32,7 +32,7 @@ var Version = "dev"
 
 const usageHint = "Try 'portpeek --help' for usage."
 
-const helpText = `Usage: portpeek <port> [--tcp|--udp] [--json]
+const helpText = `Usage: portpeek <port> [--tcp|--udp] [--detail|--json]
        portpeek <port> --stop [--pid <pid>] [--force] [--tcp|--udp]
        portpeek tui [--interval <duration>]
 
@@ -42,7 +42,9 @@ refreshing overview of every local port.
 Options:
   --tcp        only look at TCP sockets
   --udp        only look at UDP sockets
-  --json       print machine-readable JSON (schema 1)
+  --detail     show everything known: every socket, user, full command,
+               working directory and stop commands
+  --json       print machine-readable JSON (schema 1); --detail is ignored
   --stop       send SIGTERM to the process using the port, after confirmation
   --pid <pid>  with --stop, the process to stop when several use the port
   --force      with --stop, skip confirmation (required when stdin is not a terminal)
@@ -70,6 +72,7 @@ type options struct {
 	port     int
 	protocol inspect.Protocol
 	json     bool
+	detail   bool
 	version  bool
 	help     bool
 
@@ -104,6 +107,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Deps
 type stdio struct {
 	stdout io.Writer
 	stderr io.Writer
+	// width overrides the detected text width when positive.
+	width int
 }
 
 // run is Run with the stop side effects injected, so tests can replace them.
@@ -133,7 +138,8 @@ func run(ctx context.Context, args []string, out stdio, ins inspect.Inspector, s
 		return reportFailure(stdout, stderr, q, err, opts.json)
 	}
 
-	if err := render(stdout, q, res.Owners, opts.json); err != nil {
+	f := format{json: opts.json, detail: opts.detail, view: stdoutView(out)}
+	if err := render(stdout, q, res.Owners, f); err != nil {
 		_, _ = fmt.Fprintf(stderr, "portpeek: writing output: %v\n", err)
 		return exitFailure
 	}
@@ -166,6 +172,7 @@ func parseArgs(args []string) (options, error) {
 	fs.BoolVar(&tcp, "tcp", false, "")
 	fs.BoolVar(&udp, "udp", false, "")
 	fs.BoolVar(&opts.json, "json", false, "")
+	fs.BoolVar(&opts.detail, "detail", false, "")
 	fs.BoolVar(&opts.version, "version", false, "")
 	fs.BoolVar(&opts.stop, "stop", false, "")
 	fs.BoolVar(&opts.force, "force", false, "")

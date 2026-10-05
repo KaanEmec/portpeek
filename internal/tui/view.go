@@ -87,16 +87,20 @@ func (m model) columns() []column {
 
 	bindingWidth := minBindingWidth
 	for _, r := range m.visible {
-		bindingWidth = max(bindingWidth, lipgloss.Width(r.binding()))
+		bindingWidth = max(bindingWidth, lipgloss.Width(r.bind.String()))
 	}
 	bindingWidth = min(bindingWidth, maxBindingWidth)
 
-	port := column{title: "Port", width: 5, cell: func(r row) string { return strconv.Itoa(r.port) }}
-	proto := column{title: "Proto", width: 5, cell: func(r row) string { return string(r.proto) }}
-	binding := column{title: "Binding", width: bindingWidth, cell: row.binding}
+	port := column{title: "Port", width: 5, cell: func(r row) string { return strconv.Itoa(r.bind.Port) }}
+	proto := column{title: "Proto", width: 5, cell: func(r row) string { return string(r.bind.Protocol) }}
+	binding := column{title: "Binding", width: bindingWidth, cell: func(r row) string { return r.bind.String() }}
 	process := column{title: "Process", cell: func(r row) string { return r.process }}
-	pid := column{title: "PID", width: 7, cell: row.pidText}
-	exposure := column{title: "Exposure", width: 14, cell: func(r row) string { return exposureLabel(r.exposure) }}
+	pid := column{title: "PID", width: 7, cell: func(r row) string { return cli.PIDText(r.pid) }}
+	exposure := column{
+		title: "Exposure",
+		width: 14,
+		cell:  func(r row) string { return cli.ExposureLabel(r.bind.Exposure()) },
+	}
 
 	cols := []column{port, proto}
 	if showBinding {
@@ -264,7 +268,7 @@ func (m model) clampedOffset() int {
 	return clamp(off, 0, max(len(m.visible)-h, 0))
 }
 
-// renderDetails shows the CLI's answer for the selected port.
+// renderDetails shows the CLI's --detail answer for the selected port.
 func (m model) renderDetails() string {
 	w := m.viewWidth()
 	d := m.detail
@@ -283,7 +287,7 @@ func (m model) renderDetails() string {
 	case d.errText != "":
 		body = append(body, errorStyle.Render(fit(d.errText, w)))
 	default:
-		text := strings.TrimSuffix(cli.RenderText(q, d.owners), "\n")
+		text := strings.TrimSuffix(cli.RenderDetail(q, d.owners), "\n")
 		for _, line := range strings.Split(text, "\n") {
 			body = append(body, fit(line, w))
 		}
@@ -320,23 +324,7 @@ func helpLine(bindings ...key.Binding) string {
 
 // fit truncates s to w display cells, ending in "…" when cut.
 func fit(s string, w int) string {
-	if lipgloss.Width(s) <= w {
-		return s
-	}
-	if w <= 0 {
-		return ""
-	}
-	var b strings.Builder
-	used := 0
-	for _, r := range s {
-		rw := lipgloss.Width(string(r))
-		if used+rw > w-1 {
-			break
-		}
-		b.WriteRune(r)
-		used += rw
-	}
-	return b.String() + "…"
+	return cli.Truncate(s, w)
 }
 
 // pad fits s into exactly w display cells.

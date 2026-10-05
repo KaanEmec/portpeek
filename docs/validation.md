@@ -10,8 +10,11 @@
 Listeners were throwaway Python sockets on ports 47101-47199. Commands and
 paths are trimmed with `...`; the rest is copied from real runs. Exit code is
 in `[ ]`. As a non-root user every text result ends with the line
-`Sockets owned by other users are not visible without elevated privileges (try sudo).`
-(written `<sudo hint>` below).
+`other users' sockets hidden; run with sudo` (written `<sudo hint>` below).
+
+Text examples are shown in the compact output of 1.2 (2026-10-05). They were
+rewritten from the recorded runs into the new shape, not captured again; the
+checks themselves were not re-run. JSON examples are unchanged.
 
 ## Results
 
@@ -39,27 +42,24 @@ No check failed.
 
 ```
 $ portpeek 47101   [0]
-Port 47101/tcp is used by Python (PID 52437)
-  Address:      127.0.0.1:47101 (IPv4, LISTEN)
-  Exposure:     loopback only — accepts connections from this machine only
-  Command:      .../Python listen.py 3 tcp4:47101
-  Working dir:  .../scratchpad
-  Stop:         kill 52437
-<sudo hint>   (after a blank line)
-$ portpeek 47102   [0]   Address: *:47102 (IPv4, LISTEN)
-  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
-$ portpeek 47103   [0]   Address: [::1]:47103 (IPv6, LISTEN)   Exposure: loopback only
+47101/tcp  Python  (PID 52437)
+  127.0.0.1:47101   listening   loopback only
+  Python listen.py 3 tcp4:47101
+  stop: kill 52437
+<sudo hint>
+$ portpeek 47102   [0]   *:47102   listening   all interfaces
+$ portpeek 47103   [0]   [::1]:47103   listening   loopback only
 ```
 
 ## 4-5. UDP, and TCP plus UDP from one process
 
 ```
-$ portpeek 47104   [0]   Port 47104/udp ... Address: 127.0.0.1:47104 (IPv4, bound)
-$ portpeek 47104 --tcp   [1]   No listening or bound socket on port 47104 (tcp).
+$ portpeek 47104   [0]   47104/udp ...   127.0.0.1:47104   bound   loopback only
+$ portpeek 47104 --tcp   [1]   no listening or bound socket on 47104 (tcp)
 $ portpeek 47105   [0]
-Port 47105/tcp+udp is used by Python (PID 52486)
-  Address:      127.0.0.1:47105 (tcp, IPv4, LISTEN)
-  Address:      127.0.0.1:47105 (udp, IPv4, bound)
+47105/tcp+udp  Python  (PID 52486)
+  tcp 127.0.0.1:47105   listening   loopback only
+  udp 127.0.0.1:47105   bound       loopback only
 $ portpeek 47105 --tcp   [0]   one owner, only the LISTEN address
 ```
 
@@ -67,9 +67,9 @@ $ portpeek 47105 --tcp   [0]   one owner, only the LISTEN address
 
 ```
 $ portpeek 47106   [0]
-2 processes use port 47106:
-Port 47106/tcp is used by Python (PID 52504)   Address: *:47106 (IPv4, LISTEN)
-Port 47106/tcp is used by Python (PID 52505)   Address: *:47106 (IPv4, LISTEN)
+47106/tcp  2 processes
+  Python   PID 52504  *:47106   all interfaces
+  Python   PID 52505  *:47106   all interfaces
 <sudo hint>   (once, after the last owner)
 ```
 
@@ -77,7 +77,7 @@ Port 47106/tcp is used by Python (PID 52505)   Address: *:47106 (IPv4, LISTEN)
 
 ```
 $ portpeek 47199   [1]
-No listening or bound socket on port 47199 (tcp or udp).
+no listening or bound socket on 47199 (tcp or udp)
 <sudo hint>
 ```
 
@@ -117,10 +117,11 @@ step, gone by the `ps` step:
 
 ```
 $ portpeek 47111   [0]
-Port 47111/tcp is used by Python (PID 52572)
-  Address:      127.0.0.1:47111 (IPv4, LISTEN)
-  Command:      unavailable (process exited)
-$ portpeek 47111   [1]   (after exit)   No listening or bound socket on port 47111 (tcp or udp).
+47111/tcp  Python  (PID 52572)
+  127.0.0.1:47111   listening   loopback only
+  command unavailable (process exited)
+  stop: kill 52572
+$ portpeek 47111   [1]   (after exit)   no listening or bound socket on 47111 (tcp or udp)
 ```
 
 No crash, no exit 3.
@@ -130,12 +131,13 @@ No crash, no exit 3.
 Listener on 47112 (PID 52590); a client in another process connected from port
 63180 (`lsof`: `127.0.0.1:63180->127.0.0.1:47112 (ESTABLISHED)`).
 `portpeek 47112` [0] lists only the listener; `portpeek 63180` [1] says
-`No listening or bound socket on port 63180 (tcp or udp).`
+`no listening or bound socket on 63180 (tcp or udp)`.
 
 ## 12. Dual-stack `::` listener
 
 One AF_INET6 socket on `::` (V6ONLY off). lsof shows one row
-(`TCP *:47113 (LISTEN)`) and so does portpeek: `Address: *:47113 (IPv6, LISTEN)`.
+(`TCP *:47113 (LISTEN)`) and so does portpeek: `*:47113   listening   all interfaces`,
+with `IPv6` in the family column of `--detail`.
 
 ## 13. TCP bound but not listening
 
@@ -143,14 +145,13 @@ One AF_INET6 socket on `::` (V6ONLY off). lsof shows one row
 
 ```
 $ portpeek 47115   [0]
-Port 47115/tcp is used by Python (PID 52637)
-  Address:      127.0.0.1:47115 (IPv4, bound, not listening)
-  Exposure:     loopback only — accepts connections from this machine only
+47115/tcp  Python  (PID 52637)
+  127.0.0.1:47115   bound, not listening   loopback only
 $ portpeek 47115 --json   [0]   "state": "BOUND"  (protocol "tcp")
 ```
 
-Note the exposure line says "accepts connections" although nothing is
-listening; see Findings.
+The text before 1.2 said "accepts connections" although nothing is listening;
+see Findings.
 
 ## 14. Link-local IPv6
 
@@ -158,8 +159,7 @@ UDP socket bound to `fe80::1%lo0` (via `getaddrinfo`, scope id 1):
 
 ```
 $ portpeek 47116   [0]
-  Address:      [fe80::1%lo0]:47116 (IPv6, bound)
-  Exposure:     specific interface fe80::1%lo0 — accepts connections on that address only (firewall not checked)
+  [fe80::1%lo0]:47116   bound   interface fe80::1%lo0
 $ lsof -nP -i UDP:47116   ->   UDP [fe80:1::1]:47116
 ```
 
@@ -173,7 +173,7 @@ lsof cannot see it:
 
 ```
 $ portpeek 137   [1]
-No listening or bound socket on port 137 (tcp or udp).
+no listening or bound socket on 137 (tcp or udp)
 <sudo hint>
 $ portpeek 137 --json   [1]   "complete": false, "owners": []
 ```
@@ -215,12 +215,14 @@ Remaining, none blocking:
 
 1. A hidden root-owned port still exits 1; scripts must read `complete`.
 2. The sudo hint appears on every result when not root, so it says little per run.
-3. Exposure text for a non-listening TCP socket (check 13) says "accepts
-   connections", which is not accurate without `listen()`.
+3. Exposure text for a non-listening TCP socket (check 13) said "accepts
+   connections", which is not accurate without `listen()`. Addressed in 1.2:
+   the exposure words no longer claim that.
 4. JSON `query.protocol` is `""` when neither flag is given.
 5. Stale PID in the stop hint (check 10): `kill 52572` for an exited process.
-6. Long commands are printed in full (UDP 5353 Chrome/Codex helpers: about
-   1.2 KB per owner, including metrics ids).
+6. Long commands were printed in full (UDP 5353 Chrome/Codex helpers: about
+   1.2 KB per owner, including metrics ids). Addressed in 1.2: the default
+   view cuts the command to one line; `--detail` still prints it in full.
 7. `ps` renders newlines as `\012`; `python3 -c` scripts show
    `-c \012import socket,time\012...` (JSON-escaped as `\\012`).
 

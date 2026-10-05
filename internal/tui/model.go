@@ -365,7 +365,7 @@ func (m model) openDetails() (model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	q := inspect.Query{Port: r.port, Protocol: r.proto}
+	q := inspect.Query{Port: r.bind.Port, Protocol: r.bind.Protocol}
 	seq := m.detail.seq + 1
 	m.detail = detailState{seq: seq, query: q, loading: true}
 	m.screen = screenDetails

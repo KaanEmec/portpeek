@@ -71,11 +71,11 @@ func pythonOwner() inspect.Owner {
 	}
 }
 
-// renderedText is the normal text result that --stop prints before acting.
+// renderedText is the default text result that --stop prints before acting.
 func renderedText(t *testing.T, owners []inspect.Owner) string {
 	t.Helper()
 	var b bytes.Buffer
-	if err := render(&b, inspect.Query{Port: 3000}, owners, false); err != nil {
+	if err := render(&b, inspect.Query{Port: 3000}, owners, format{view: plainView}); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return b.String()

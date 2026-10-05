@@ -4,10 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
@@ -20,43 +17,47 @@ var privileged = allSocketsVisible()
 // unknownOwnerHint wins over hiddenSocketsHint when both apply, because it
 // names the gap the user can actually see in the output.
 const (
-	hiddenSocketsHint = "Sockets owned by other users are not visible without elevated privileges (try sudo).\n"
-	unknownOwnerHint  = "Owner details for some sockets are not readable without elevated privileges (try sudo).\n"
+	hiddenSocketsHint = "other users' sockets hidden; run with sudo"
+	unknownOwnerHint  = "some owners unreadable; run with sudo"
 )
 
-// labelWidth aligns field values: the longest label is "Working dir:".
-const labelWidth = 14
-
-// render writes the result as JSON or text, including the no-match case.
-func render(w io.Writer, q inspect.Query, owners []inspect.Owner, asJSON bool) error {
-	if asJSON {
-		return writeJSON(w, q, owners)
-	}
-	_, err := io.WriteString(w, RenderText(q, owners))
-	return err
+// format says how a result is written.
+type format struct {
+	json bool
+	// detail selects the --detail text view; it is ignored with json.
+	detail bool
+	view   textView
 }
 
-// RenderText returns the text answer for a query exactly as `portpeek <port>`
-// prints it: the owners, or the no-match line, followed by the completeness
-// hint when the answer may be incomplete. The terminal interface uses it so
-// both describe a port in the same words.
+// render writes the result as JSON or text, including the no-match case.
+func render(w io.Writer, q inspect.Query, owners []inspect.Owner, f format) error {
+	if f.json {
+		return writeJSON(w, q, owners)
+	}
+	return f.view.write(w, q, owners, f.detail)
+}
+
+// RenderText returns the default text answer for a query as `portpeek <port>`
+// prints it when piped: a short headline and a few lines per owner, or the
+// no-match line, followed by the completeness hint when the answer may be
+// incomplete. Lines are cut to 100 columns and carry no styling. The
+// terminal interface uses it so both describe a port in the same words.
 func RenderText(q inspect.Query, owners []inspect.Owner) string {
-	hint := completenessHint(owners)
-	if len(owners) == 0 {
-		return fmt.Sprintf("No listening or bound socket on port %d (%s).\n", q.Port, protocolPhrase(q)) + hint
-	}
-	text := renderText(q, owners)
-	if hint != "" {
-		text += "\n" + hint
-	}
-	return text
+	return plainView.compact(q, owners)
+}
+
+// RenderDetail returns the --detail text answer for a query, unstyled:
+// every owner with its sockets, process details and stop commands in
+// labelled sections. Nothing is cut.
+func RenderDetail(q inspect.Query, owners []inspect.Owner) string {
+	return plainView.detail(q, owners)
 }
 
 // CompletenessHint returns the one-line hint, without a trailing newline,
 // that the CLI prints under a possibly incomplete answer for owners, or ""
 // when the answer is complete.
 func CompletenessHint(owners []inspect.Owner) string {
-	return strings.TrimSuffix(completenessHint(owners), "\n")
+	return completenessHint(owners)
 }
 
 // isUnknownOwner reports whether an adapter listed a socket but could not
@@ -77,8 +78,8 @@ func complete(owners []inspect.Owner) bool {
 	return privileged && !hasUnknownOwner(owners)
 }
 
-// completenessHint returns the line that ends a possibly incomplete text
-// result, or "" when the result is complete.
+// completenessHint returns the line, without a newline, that ends a possibly
+// incomplete text result, or "" when the result is complete.
 func completenessHint(owners []inspect.Owner) string {
 	switch {
 	case hasUnknownOwner(owners):
@@ -98,63 +99,9 @@ func protocolPhrase(q inspect.Query) string {
 	return string(q.Protocol)
 }
 
-// renderText formats owners as labelled blocks separated by blank lines.
-func renderText(q inspect.Query, owners []inspect.Owner) string {
-	var b strings.Builder
-	if len(owners) > 1 {
-		fmt.Fprintf(&b, "%d processes use port %d:\n\n", len(owners), q.Port)
-	}
-	for i, owner := range owners {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		writeOwner(&b, q, owner)
-	}
-	return b.String()
-}
-
-func writeOwner(b *strings.Builder, q inspect.Query, owner inspect.Owner) {
-	p := owner.Process
-
-	protos := protocols(owner.Sockets)
-	fmt.Fprintf(
-		b,
-		"Port %d/%s is used by %s\n",
-		q.Port,
-		strings.Join(protos, "+"),
-		headlineProcess(p),
-	)
-
-	unknown := isUnknownOwner(p)
-	if unknown {
-		writeField(b, "Owner", processField(p, inspect.FieldName, ""))
-	}
-	mixed := len(protos) > 1
-	for _, s := range owner.Sockets {
-		writeField(b, "Address", socketDescription(s, mixed))
-	}
-	writeExposure(b, owner.Sockets)
-	writeField(b, "User", processField(p, inspect.FieldUser, p.User))
-	writeField(b, "Command", processField(p, inspect.FieldCommand, p.Command))
-	writeField(b, "Working dir", processField(p, inspect.FieldWorkingDir, p.WorkingDir))
-	// An unknown owner has no PID, and "kill 0" would signal the user's own
-	// process group, so no stop hint is printed for it.
-	if !unknown {
-		writeField(b, "Stop", stopHint(p.PID))
-	}
-}
-
-// writeField writes one labelled line. An empty label continues the previous
-// field's value column.
-func writeField(b *strings.Builder, label, value string) {
-	if label != "" {
-		label += ":"
-	}
-	fmt.Fprintf(b, "  %-*s%s\n", labelWidth, label, value)
-}
-
-// headlineProcess names the process, falling back to the PID when the name is
-// unavailable and to "an unknown process" when the owner is unknown.
+// headlineProcess names the process in the --stop flow's messages, falling
+// back to the PID when the name is unavailable and to "an unknown process"
+// when the owner is unknown.
 func headlineProcess(p inspect.Process) string {
 	switch {
 	case isUnknownOwner(p):
@@ -176,92 +123,6 @@ func protocols(sockets []inspect.Socket) []string {
 		}
 	}
 	return names
-}
-
-// socketAddress formats the bound address and port, bracketing IPv6.
-func socketAddress(s inspect.Socket) string {
-	return net.JoinHostPort(s.Address, strconv.Itoa(s.Port))
-}
-
-// socketDescription renders "127.0.0.1:3000 (IPv4, LISTEN)". The protocol is
-// added only when the owner holds sockets of more than one protocol.
-func socketDescription(s inspect.Socket, withProtocol bool) string {
-	parts := []string{}
-	if withProtocol {
-		parts = append(parts, string(s.Protocol))
-	}
-	parts = append(parts, familyLabel(s.Family), stateLabel(s))
-	return fmt.Sprintf("%s (%s)", socketAddress(s), strings.Join(parts, ", "))
-}
-
-// stateLabel describes how the socket holds its port. A bound TCP socket is
-// called out because it holds the port without accepting connections.
-func stateLabel(s inspect.Socket) string {
-	switch {
-	case s.State == inspect.StateListen:
-		return "LISTEN"
-	case s.State == inspect.StateBound && s.Protocol == inspect.TCP:
-		return "bound, not listening"
-	case s.State == inspect.StateBound:
-		return "bound"
-	default:
-		return s.State
-	}
-}
-
-func familyLabel(f inspect.Family) string {
-	switch f {
-	case inspect.IPv4:
-		return "IPv4"
-	case inspect.IPv6:
-		return "IPv6"
-	default:
-		return "unknown family"
-	}
-}
-
-// exposureText explains an exposure in plain language.
-func exposureText(s inspect.Socket) string {
-	switch s.Exposure() {
-	case inspect.ExposureLoopback:
-		return "loopback only — accepts connections from this machine only"
-	case inspect.ExposureAllInterfaces:
-		return "all interfaces — accepts connections on every network interface (firewall not checked)"
-	case inspect.ExposureInterface:
-		return fmt.Sprintf(
-			"specific interface %s — accepts connections on that address only (firewall not checked)",
-			s.Address,
-		)
-	default:
-		return "unknown"
-	}
-}
-
-// writeExposure writes one Exposure line when every socket agrees, otherwise
-// one line per socket prefixed with its address.
-func writeExposure(b *strings.Builder, sockets []inspect.Socket) {
-	if len(sockets) == 0 {
-		return
-	}
-
-	texts := make([]string, len(sockets))
-	same := true
-	for i, s := range sockets {
-		texts[i] = exposureText(s)
-		same = same && texts[i] == texts[0]
-	}
-	if same {
-		writeField(b, "Exposure", texts[0])
-		return
-	}
-
-	for i, s := range sockets {
-		label := ""
-		if i == 0 {
-			label = "Exposure"
-		}
-		writeField(b, label, fmt.Sprintf("%s: %s", socketAddress(s), texts[i]))
-	}
 }
 
 // processField returns the value, or the unavailable reason when the field

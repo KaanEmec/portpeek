@@ -59,24 +59,30 @@ a matching hint line. "No listening or bound socket" never claims the port is fr
 ## CLI contract (internal/cli)
 
 ```
-portpeek <port> [--tcp|--udp] [--json]
+portpeek <port> [--tcp|--udp] [--detail|--json]
 portpeek <port> --stop [--pid N] [--force]
+portpeek tui [--interval 5s]
 ```
 
 Exit codes: `0` at least one owner (with `--stop`: SIGTERM sent), `1` no matching
 socket, `2` invalid input/usage, `3` inspection failed (tool missing, permission
 denied, command error), `4` stop not performed (declined, ambiguous, stale identity,
 signal failed), `130` interrupted.
-Text output lists each owner with labelled fields; unavailable fields print the reason,
-never a guess. Text ends with a one-line exposure explanation and a manual stop hint
-(`kill <pid>`) that the tool itself does not run. JSON (`--json`) is versioned
+Default text is compact: a `port/proto  name  (PID n)` headline, one binding line per
+address (families collapsed to `(v4+v6)`), the command shortened to the terminal width,
+and a `stop:` hint the tool never runs itself; several owners become one aligned row
+each. `--detail` prints grouped Sockets / Process / Stop sections with every known
+field. Unavailable fields print the reason, never a guess. Hidden-socket and
+unknown-owner hints are one short trailing line. Styling (bold, dim) only on a
+terminal with `NO_COLOR` unset and `TERM != dumb`; width from the terminal, else 100.
+`RenderText`/`RenderDetail` are exported for the TUI, always plain at width 100. JSON (`--json`) is versioned
 (`"schema": 1`) and stable from 1.0; multiple owners and unavailable fields are explicit.
 
 ## Key decisions
 
 | Decision | Choice | Why |
 |---|---|---|
-| Language / deps | Go, standard library plus `golang.org/x/term` (TTY detection for `--stop`); Charm v2 libs (`charm.land/{bubbletea,bubbles,lipgloss}/v2`) only in `internal/tui` | Single small binary, no runtime. A mode-bits check mistakes `/dev/null` for a terminal |
+| Language / deps | Go, standard library plus `golang.org/x/term` (TTY detection, width); `charm.land/lipgloss/v2` for optional styling in `internal/cli`; Bubble Tea and Bubbles only in `internal/tui` | Single small binary, no runtime. A mode-bits check mistakes `/dev/null` for a terminal |
 | macOS source | `lsof -nP -F pcnLTtfP0 -i :PORT` then `ps -o command=` and `lsof -d cwd` per PID | Machine-readable, present on every macOS, no entitlements |
 | Windows source | `netstat -a -n -o -p {TCP,TCPv6,UDP,UDPv6}` then `Get-CimInstance Win32_Process` per PID via `powershell -NoProfile` | Present on every Windows, no admin needed for PIDs. Live test passed on windows-latest CI (2026-10-05). `Get-NetTCPConnection` is the locale-independent fallback if netstat's translated state words prove a problem |
 | Linux source | `ss -H -a -n -p -t -u 'sport = :PORT'` then `/proc/PID/{comm,cmdline,cwd,status}` | iproute2 is ubiquitous; procfs needs no extra tool. `-H` needs iproute2 ≥ 4.13; wildcard `*` means dual-stack IPv6, `0.0.0.0`/`[::]`/`*` all stored as `*` |
@@ -94,7 +100,7 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 | v0.1 macOS answer | done 2026-10-05 | model, CLI, lsof adapter, validation record in docs/validation.md |
 | v0.2 safe control + Linux | done 2026-10-05 | `--stop` flow; `ss`/procfs adapter validated in Docker (golang:1.27, iproute2 6.15) and CI ubuntu runner |
 | v1.0 cross-platform release | ready to tag | Windows live test green on CI; GoReleaser + release workflow ready; remote github.com/kaanemec/portpeek, MIT confirmed by owner 2026-10-05 |
-| v1.2 readable output | planned (owner request 2026-10-05) | compact default, `--detail` view, shared renderer with the TUI detail pane |
+| v1.2 readable output | done 2026-10-05 | compact default, `--detail` view, TUI details pane uses `RenderDetail` |
 | v1.1 port TUI | done 2026-10-05 | `Lister` on all adapters; Bubble Tea table, details, refresh, search, stop from details; verified live on macOS |
 
 Out of scope: remote scanning, Docker management, traffic measurement, history.

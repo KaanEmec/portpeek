@@ -2,26 +2,24 @@ package tui
 
 import (
 	"cmp"
-	"net"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/kaanemec/portpeek/internal/cli"
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
 
-// row is one socket in the table.
+// row is one binding in the table: the sockets of one owner that differ
+// only by address family share a row, as in the CLI's output.
 type row struct {
-	port    int
-	proto   inspect.Protocol
-	address string
+	bind cli.Binding
 	// process is the owner's name, or "unknown" when it has none.
-	process  string
-	pid      int
-	exposure inspect.Exposure
+	process string
+	pid     int
 }
 
-// rowKey identifies a socket across refreshes, so the selection follows it
+// rowKey identifies a binding across refreshes, so the selection follows it
 // when rows are added, removed or reordered.
 type rowKey struct {
 	port    int
@@ -30,41 +28,12 @@ type rowKey struct {
 }
 
 func (r row) key() rowKey {
-	return rowKey{port: r.port, proto: r.proto, address: r.address}
+	return rowKey{port: r.bind.Port, proto: r.bind.Protocol, address: r.bind.Address}
 }
 
-// binding is the bound address and port, with IPv6 bracketed.
-func (r row) binding() string {
-	return net.JoinHostPort(r.address, strconv.Itoa(r.port))
-}
-
-// pidText is the PID, or "-" for an owner the OS did not attribute.
-func (r row) pidText() string {
-	if r.pid <= 0 {
-		return "-"
-	}
-	return strconv.Itoa(r.pid)
-}
-
-// exposureLabel is a short form of the CLI's exposure wording that fits a
-// column.
-func exposureLabel(e inspect.Exposure) string {
-	switch e {
-	case inspect.ExposureLoopback:
-		return "loopback"
-	case inspect.ExposureAllInterfaces:
-		return "all interfaces"
-	case inspect.ExposureInterface:
-		return "interface"
-	default:
-		return "unknown"
-	}
-}
-
-// buildRows flattens a snapshot into one row per socket. Sockets that would
-// render as identical rows collapse into one: adapters report both families
-// of a dual-stack wildcard listener as "*", and two equal lines would only
-// look like a glitch. The details view still lists every socket.
+// buildRows flattens a snapshot into one row per binding, collapsed with the
+// CLI's rules: both families of a dual-stack wildcard listener share one row
+// marked "(v4+v6)". The details view lists every socket.
 func buildRows(snap inspect.Snapshot) []row {
 	rows := []row{}
 	seen := map[row]bool{}
@@ -74,15 +43,8 @@ func buildRows(snap inspect.Snapshot) []row {
 		if name == "" || p.PID <= 0 {
 			name = "unknown"
 		}
-		for _, s := range o.Sockets {
-			r := row{
-				port:     s.Port,
-				proto:    s.Protocol,
-				address:  s.Address,
-				process:  name,
-				pid:      p.PID,
-				exposure: s.Exposure(),
-			}
+		for _, b := range cli.CollapseBindings(o.Sockets) {
+			r := row{bind: b, process: name, pid: p.PID}
 			if !seen[r] {
 				seen[r] = true
 				rows = append(rows, r)
@@ -121,9 +83,9 @@ func (s sortMode) next() sortMode {
 func sortRows(rows []row, mode sortMode) {
 	byPort := func(a, b row) int {
 		return cmp.Or(
-			cmp.Compare(a.port, b.port),
-			cmp.Compare(a.proto, b.proto),
-			cmp.Compare(a.address, b.address),
+			cmp.Compare(a.bind.Port, b.bind.Port),
+			cmp.Compare(a.bind.Protocol, b.bind.Protocol),
+			cmp.Compare(a.bind.Address, b.bind.Address),
 			cmp.Compare(a.pid, b.pid),
 		)
 	}
@@ -149,7 +111,7 @@ func filterRows(rows []row, query string) []row {
 	}
 	kept := []row{}
 	for _, r := range rows {
-		portMatch := strings.HasPrefix(strconv.Itoa(r.port), query)
+		portMatch := strings.HasPrefix(strconv.Itoa(r.bind.Port), query)
 		if portMatch || strings.Contains(strings.ToLower(r.process), query) {
 			kept = append(kept, r)
 		}
