@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
@@ -456,6 +457,202 @@ func TestInspector_Inspect_Cancelled(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The all_*.txt fixtures combine rows of the other constructed fixtures
+// (system_pid, tcp4_listener, pid_zero, tcp_bound_not_listening,
+// established_mixed, dual_stack_tcpv6, link_local, udp_bound,
+// udpv6_loopback) into one listing per table, across ports 80, 135, 3000,
+// 3001 and 5353. Like those, they are not recordings.
+func TestInspector_List(t *testing.T) {
+	t.Parallel()
+
+	runner := newFakeRunner(netstatResponses(t, map[string]string{
+		"TCP":   string(readFixture(t, "all_tcp.txt")),
+		"TCPv6": string(readFixture(t, "all_tcpv6.txt")),
+		"UDP":   string(readFixture(t, "all_udp.txt")),
+		"UDPv6": string(readFixture(t, "all_udpv6.txt")),
+	}))
+	before := time.Now()
+	got, err := NewWithRunner(runner).List(context.Background())
+	after := time.Now()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got.Taken.Before(before) || got.Taken.After(after) {
+		t.Errorf("Taken = %v, want between %v and %v", got.Taken, before, after)
+	}
+
+	// PID 5678 holds only a connection. No PowerShell runs, so Name is unset
+	// except for the System process, and Command and WorkingDir are unset
+	// and not marked unavailable. User is unavailable on Windows, as in
+	// Inspect; the unknown owner has Name and User marked as in Inspect.
+	listed := func(pid int) inspect.Process {
+		return inspect.Process{
+			PID:         pid,
+			Unavailable: map[inspect.Field]string{inspect.FieldUser: reasonNotOnWindows},
+		}
+	}
+	system := listed(systemPID)
+	system.Name = "System"
+	unknown := inspect.Process{
+		PID: unknownPID,
+		Unavailable: map[inspect.Field]string{
+			inspect.FieldName: reasonNotReported,
+			inspect.FieldUser: reasonNotReported,
+		},
+	}
+	want := []inspect.Owner{
+		{Process: system, Sockets: []inspect.Socket{tcpListen(inspect.IPv4, "*", 80)}},
+		{
+			Process: listed(1012),
+			Sockets: []inspect.Socket{
+				tcpListen(inspect.IPv4, "*", 135),
+				tcpListen(inspect.IPv6, "*", 135),
+			},
+		},
+		{
+			Process: listed(1234),
+			Sockets: []inspect.Socket{
+				tcpListen(inspect.IPv4, "127.0.0.1", 3000),
+				tcpListen(inspect.IPv6, "::1", 3000),
+				tcpListen(inspect.IPv6, "fe80::1%12", 3000),
+				udpBound(inspect.IPv4, "*", 3000),
+				udpBound(inspect.IPv6, "::1", 3000),
+				{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "*", Port: 3001, State: inspect.StateBound},
+			},
+		},
+		{
+			Process: listed(2424),
+			Sockets: []inspect.Socket{
+				udpBound(inspect.IPv4, "*", 5353),
+				udpBound(inspect.IPv6, "*", 5353),
+			},
+		},
+		{Process: unknown, Sockets: []inspect.Socket{tcpListen(inspect.IPv4, "*", 3000)}},
+	}
+	if !reflect.DeepEqual(got.Owners, want) {
+		t.Errorf("Owners =\n%+v\nwant\n%+v", got.Owners, want)
+	}
+
+	wantCalls := []string{netstatKey("TCP"), netstatKey("TCPv6"), netstatKey("UDP"), netstatKey("UDPv6")}
+	if calls := runner.commands(); !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("commands =\n%q\nwant\n%q", calls, wantCalls)
+	}
+}
+
+func TestInspector_List_NoSockets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		tables map[string]string
+	}{
+		{name: "header only"},
+		{
+			name: "only connections",
+			tables: map[string]string{
+				"TCP": string(readFixture(t, "empty.txt")) +
+					"  TCP    127.0.0.1:3000         127.0.0.1:52000        ESTABLISHED     1234\r\n" +
+					"  TCP    127.0.0.1:3000         127.0.0.1:51999        TIME_WAIT       0\r\n" +
+					"  TCP    127.0.0.1:52000        127.0.0.1:3000         ESTABLISHED     5678\r\n",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runner := newFakeRunner(netstatResponses(t, tt.tables))
+			got, err := NewWithRunner(runner).List(context.Background())
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if got.Owners == nil || len(got.Owners) != 0 {
+				t.Errorf("Owners = %#v, want empty non-nil slice", got.Owners)
+			}
+			if got.Taken.IsZero() {
+				t.Error("Taken is zero")
+			}
+		})
+	}
+}
+
+func TestInspector_List_Errors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		table    string
+		resp     response
+		wantKind inspect.Kind
+		wantText string
+	}{
+		{
+			name:     "netstat not installed",
+			table:    "TCP",
+			resp:     response{code: -1, err: &exec.Error{Name: "netstat", Err: exec.ErrNotFound}},
+			wantKind: inspect.KindToolMissing,
+		},
+		{
+			name:     "non-zero exit on a later table",
+			table:    "UDPv6",
+			resp:     response{code: 1, stderr: "The requested protocol is not supported.\r\n"},
+			wantKind: inspect.KindCommandFailed,
+			wantText: "not supported",
+		},
+		{
+			name:     "unparseable output",
+			table:    "UDP",
+			resp:     response{stdout: "  UDP    0.0.0.0:3000           *:*                                    x\r\n"},
+			wantKind: inspect.KindCommandFailed,
+			wantText: "parsing UDP output",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			responses := netstatResponses(t, nil)
+			responses[netstatKey(tt.table)] = tt.resp
+			_, err := NewWithRunner(newFakeRunner(responses)).List(context.Background())
+			ie, ok := errors.AsType[*inspect.Error](err)
+			if !ok || ie.Kind != tt.wantKind || ie.Op != "netstat" {
+				t.Fatalf("List error = %#v, want *inspect.Error of kind %q for netstat", err, tt.wantKind)
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Errorf("error %q does not contain %q", err, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestInspector_List_Cancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	responses := netstatResponses(t, map[string]string{"TCP": string(readFixture(t, "all_tcp.txt"))})
+	runner := cancellingRunner{fakeRunner: newFakeRunner(responses), cancelAfter: "netstat", cancel: cancel}
+
+	got, err := NewWithRunner(runner).List(ctx)
+
+	if _, isInspect := errors.AsType[*inspect.Error](err); !errors.Is(err, context.Canceled) || isInspect {
+		t.Errorf("List error = %#v, want plain context.Canceled", err)
+	}
+	if len(got.Owners) != 0 {
+		t.Errorf("Owners = %+v, want none on cancellation", got.Owners)
+	}
+	// The remaining tables are not queried once the context is done.
+	if calls := runner.commands(); len(calls) != 1 {
+		t.Errorf("commands = %q, want only the first netstat call", calls)
+	}
+}
+
+func tcpListen(family inspect.Family, addr string, port int) inspect.Socket {
+	return inspect.Socket{Protocol: inspect.TCP, Family: family, Address: addr, Port: port, State: inspect.StateListen}
+}
+
+func udpBound(family inspect.Family, addr string, port int) inspect.Socket {
+	return inspect.Socket{Protocol: inspect.UDP, Family: family, Address: addr, Port: port, State: inspect.StateBound}
 }
 
 func TestExecRunner_Run(t *testing.T) {

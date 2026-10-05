@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
@@ -33,8 +34,10 @@ const usageHint = "Try 'portpeek --help' for usage."
 
 const helpText = `Usage: portpeek <port> [--tcp|--udp] [--json]
        portpeek <port> --stop [--pid <pid>] [--force] [--tcp|--udp]
+       portpeek tui [--interval <duration>]
 
-Show which process is using a local port.
+Show which process is using a local port. "portpeek tui" opens a searchable,
+refreshing overview of every local port.
 
 Options:
   --tcp        only look at TCP sockets
@@ -45,6 +48,9 @@ Options:
   --force      with --stop, skip confirmation (required when stdin is not a terminal)
   --version    print the version and exit
   -h, --help   show this help and exit
+
+tui options:
+  --interval <duration>  auto-refresh period, e.g. 10s (default 5s, minimum 1s)
 
 --stop re-inspects the port right before signalling and stops nothing if the
 process changed. It sends SIGTERM only and never escalates to SIGKILL.
@@ -72,11 +78,26 @@ type options struct {
 	pid   int // 0 when --pid was not given
 }
 
+// Deps are the platform pieces Run works with.
+type Deps struct {
+	// Inspector answers one-port queries.
+	Inspector inspect.Inspector
+	// Lister enumerates every local port; only the tui subcommand uses it.
+	Lister inspect.Lister
+	// TUI runs the terminal interface for the tui subcommand. It is
+	// injected because the interface itself builds on this package.
+	TUI func(ctx context.Context, opts TUIOptions) error
+}
+
 // Run parses args (without the program name), runs the inspector, writes the
-// output, and returns the process exit code. Only --stop has side effects;
-// without it Run is read-only.
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer, ins inspect.Inspector) int {
-	return run(ctx, args, stdio{stdout: stdout, stderr: stderr}, ins, systemStopper())
+// output, and returns the process exit code. Only --stop and the stop action
+// of the tui subcommand have side effects; otherwise Run is read-only.
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Deps) int {
+	out := stdio{stdout: stdout, stderr: stderr}
+	if len(args) > 0 && args[0] == tuiCommand {
+		return runTUI(ctx, args[1:], out, deps)
+	}
+	return run(ctx, args, out, deps.Inspector, systemStopper())
 }
 
 // stdio groups the output streams Run writes to.
@@ -250,25 +271,45 @@ func reportFailure(stdout, stderr io.Writer, q inspect.Query, err error, asJSON 
 	return exitFailure
 }
 
+// ErrorText returns the friendly message the CLI prints for an inspection
+// error, joined into one line. A query with port 0 stands for listing every
+// local port, as the terminal interface does.
+func ErrorText(q inspect.Query, err error) string {
+	_, lines := describeError(q, err)
+	return strings.Join(lines, " ")
+}
+
 // describeError maps an inspection error to a stable kind string and a
 // one or two line friendly message. The slice always has at least one line.
+// Port 0 in q means the error came from listing all ports.
 func describeError(q inspect.Query, err error) (string, []string) {
 	var ie *inspect.Error
 	if !errors.As(err, &ie) {
 		return "unknown", []string{err.Error()}
 	}
 
+	listing := q.Port == 0
 	switch ie.Kind {
 	case inspect.KindToolMissing:
 		install := "Install it and make sure it is on your PATH."
 		if ie.Op == "ss" {
 			install = "Install it (part of the iproute2 package) and make sure it is on your PATH."
 		}
+		consequence := fmt.Sprintf("port %d cannot be inspected", q.Port)
+		if listing {
+			consequence = "local ports cannot be listed"
+		}
 		return string(ie.Kind), []string{
-			fmt.Sprintf("required tool %q is not installed, so port %d cannot be inspected.", ie.Op, q.Port),
+			fmt.Sprintf("required tool %q is not installed, so %s.", ie.Op, consequence),
 			install,
 		}
 	case inspect.KindPermissionDenied:
+		if listing {
+			return string(ie.Kind), []string{
+				"permission denied while listing local ports.",
+				"Re-run with sudo for full details: sudo portpeek tui",
+			}
+		}
 		return string(ie.Kind), []string{
 			fmt.Sprintf("permission denied while inspecting port %d.", q.Port),
 			fmt.Sprintf("Re-run with sudo for full details: sudo portpeek %d", q.Port),

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
@@ -32,6 +34,9 @@ func (f fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte,
 }
 
 func findKey(selector string) string { return "lsof -nP -F pcnLTtfP0 -i " + selector }
+
+// listKey is the fakeRunner key of the List discovery command.
+const listKey = "lsof -nP -F pcnLTtfP0 -i"
 
 // Enrichment commands for PID 47885, the process in the recorded fixtures.
 const (
@@ -376,6 +381,218 @@ func TestInspector_Inspect_Cancelled(t *testing.T) {
 			}
 		})
 	}
+}
+
+// all_sockets.txt is a real `lsof -nP -F pcnLTtfP0 -i` recorded on macOS
+// 26.6.2 (lsof 4.91) as user kaanemec, trimmed to 16 process records and a
+// few file sets per record; nothing is redacted. It holds listeners on many
+// ports, IPv4 and IPv6, unconnected and connected UDP, unbound UDP ("*:*"),
+// established and link-local connections, duplicated descriptors and three
+// processes that only hold connections.
+func TestInspector_List(t *testing.T) {
+	t.Parallel()
+
+	runner := fakeRunner{listKey: {stdout: string(readFixture(t, "all_sockets.txt"))}}
+	before := time.Now()
+	got, err := NewWithRunner(runner).List(context.Background())
+	after := time.Now()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got.Taken.Before(before) || got.Taken.After(after) {
+		t.Errorf("Taken = %v, want between %v and %v", got.Taken, before, after)
+	}
+
+	owner := func(pid int, name string, sockets ...inspect.Socket) inspect.Owner {
+		return inspect.Owner{
+			Process: inspect.Process{
+				PID:         pid,
+				Name:        name,
+				User:        "kaanemec",
+				Unavailable: map[inspect.Field]string{},
+			},
+			Sockets: sockets,
+		}
+	}
+	// PIDs 372, 33289 and 67479 hold only connections and connected UDP
+	// sockets, so they own nothing. Command and WorkingDir stay unset and
+	// are not marked unavailable.
+	want := []inspect.Owner{
+		owner(947, "rapportd",
+			tcpListen(inspect.IPv4, "*", 61284),
+			tcpListen(inspect.IPv6, "*", 61284),
+		),
+		owner(963, "homed",
+			udpBound(inspect.IPv4, 52534),
+			udpBound(inspect.IPv6, 60605),
+		),
+		owner(965, "identityservicesd",
+			udpBound(inspect.IPv4, 54893),
+			udpBound(inspect.IPv4, 58358),
+		),
+		owner(1007, "ControlCenter",
+			tcpListen(inspect.IPv4, "*", 5000),
+			tcpListen(inspect.IPv6, "*", 5000),
+			tcpListen(inspect.IPv4, "*", 7000),
+			tcpListen(inspect.IPv6, "*", 7000),
+		),
+		owner(5595, "Google Drive", tcpListen(inspect.IPv6, "::1", 7679)),
+		owner(19212, "Codex (Service)",
+			udpBound(inspect.IPv4, 5353),
+			udpBound(inspect.IPv6, 5353),
+		),
+		owner(37278, "Adobe Desktop Service",
+			tcpListen(inspect.IPv4, "127.0.0.1", 15292),
+			tcpListen(inspect.IPv4, "127.0.0.1", 15393),
+			tcpListen(inspect.IPv4, "127.0.0.1", 16494),
+		),
+		owner(43122, "limactl", tcpListen(inspect.IPv4, "127.0.0.1", 58955)),
+		owner(43124, "limactl", tcpListen(inspect.IPv6, "*", 53)),
+		owner(43172, "ssh", tcpListen(inspect.IPv4, "127.0.0.1", 5432)),
+		owner(67428, "logioptionsplus_agent",
+			tcpListen(inspect.IPv4, "*", 59869),
+			udpBound(inspect.IPv4, 59870),
+			udpBound(inspect.IPv4, 59871),
+		),
+		owner(67476, "LogiPluginService",
+			tcpListen(inspect.IPv4, "127.0.0.1", 51159),
+			tcpListen(inspect.IPv4, "127.0.0.1", 51161),
+			tcpListen(inspect.IPv6, "::1", 51166),
+			tcpListen(inspect.IPv4, "127.0.0.1", 51167),
+		),
+		owner(82739, "Python", tcpListen(inspect.IPv6, "*", 8000)),
+	}
+	if !reflect.DeepEqual(got.Owners, want) {
+		t.Errorf("Owners =\n%+v\nwant\n%+v", got.Owners, want)
+	}
+}
+
+func TestInspector_List_NoSockets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		resp response
+	}{
+		{name: "exit 1 with empty output", resp: response{code: 1}},
+		{
+			name: "exit 1 with only warnings on stderr",
+			resp: response{
+				code: 1,
+				stderr: "lsof: WARNING: can't stat() nfs file system /Volumes/share\n" +
+					"      Output information may be incomplete.\n",
+			},
+		},
+		{
+			name: "only connections",
+			resp: response{stdout: "p372\x00cclaude\x00Lkaanemec\x00\n" +
+				"f13\x00tIPv4\x00PTCP\x00n10.134.16.4:63022->160.79.104.10:443\x00TST=ESTABLISHED\x00\n"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runner := fakeRunner{listKey: tt.resp}
+			got, err := NewWithRunner(runner).List(context.Background())
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if got.Owners == nil || len(got.Owners) != 0 {
+				t.Errorf("Owners = %#v, want empty non-nil slice", got.Owners)
+			}
+			if got.Taken.IsZero() {
+				t.Error("Taken is zero")
+			}
+		})
+	}
+}
+
+func TestInspector_List_Errors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resp     response
+		wantKind inspect.Kind
+		wantText string
+	}{
+		{
+			name:     "lsof not installed",
+			resp:     response{code: -1, err: &exec.Error{Name: "lsof", Err: exec.ErrNotFound}},
+			wantKind: inspect.KindToolMissing,
+		},
+		{
+			name:     "permission denied on stderr",
+			resp:     response{code: 1, stderr: "lsof: can't open /dev/kmem: Permission denied\n"},
+			wantKind: inspect.KindPermissionDenied,
+		},
+		{
+			name:     "exit 1 with stderr",
+			resp:     response{code: 1, stderr: "lsof: unsupported option\n"},
+			wantKind: inspect.KindCommandFailed,
+			wantText: "unsupported option",
+		},
+		{
+			name:     "other exit code",
+			resp:     response{code: 2},
+			wantKind: inspect.KindCommandFailed,
+			wantText: "exit status 2",
+		},
+		{
+			name:     "unparseable output",
+			resp:     response{stdout: "pnot-a-pid\x00\n"},
+			wantKind: inspect.KindCommandFailed,
+			wantText: "parsing output",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runner := fakeRunner{listKey: tt.resp}
+			_, err := NewWithRunner(runner).List(context.Background())
+			ie, ok := errors.AsType[*inspect.Error](err)
+			if !ok || ie.Kind != tt.wantKind || ie.Op != "lsof" {
+				t.Fatalf("List error = %#v, want *inspect.Error of kind %q for lsof", err, tt.wantKind)
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Errorf("error %q does not contain %q", err, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestInspector_List_Cancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	runner := &cancellingRunner{
+		fakeRunner: fakeRunner{listKey: {stdout: string(readFixture(t, "all_sockets.txt"))}},
+		cancelOn:   listKey,
+		cancel:     cancel,
+	}
+
+	got, err := NewWithRunner(runner).List(ctx)
+
+	if _, isInspect := errors.AsType[*inspect.Error](err); !errors.Is(err, context.Canceled) || isInspect {
+		t.Errorf("List error = %#v, want plain context.Canceled", err)
+	}
+	if len(got.Owners) != 0 {
+		t.Errorf("Owners = %+v, want none on cancellation", got.Owners)
+	}
+	if len(runner.ran) != 1 {
+		t.Errorf("commands run = %q, want only the lsof listing", runner.ran)
+	}
+}
+
+func tcpListen(family inspect.Family, addr string, port int) inspect.Socket {
+	return inspect.Socket{Protocol: inspect.TCP, Family: family, Address: addr, Port: port, State: inspect.StateListen}
+}
+
+// udpBound is a UDP socket bound to the wildcard address, the only kind the
+// recorded listing holds.
+func udpBound(family inspect.Family, port int) inspect.Socket {
+	return inspect.Socket{Protocol: inspect.UDP, Family: family, Address: "*", Port: port, State: inspect.StateBound}
 }
 
 func TestExecRunner_Run(t *testing.T) {

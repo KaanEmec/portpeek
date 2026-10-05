@@ -1,6 +1,7 @@
 // Package lsof is the macOS inspection adapter. It finds port owners with
 // `lsof -F` machine-readable output and enriches each owning process with
-// `ps` (full command) and `lsof -d cwd` (working directory).
+// `ps` (full command) and `lsof -d cwd` (working directory). Listing every
+// local port uses the same lsof output and skips the enrichment.
 package lsof
 
 import (
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
@@ -29,12 +31,16 @@ type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, exitCode int, err error)
 }
 
-// Inspector finds port owners on macOS. It implements inspect.Inspector.
+// Inspector finds port owners on macOS. It implements inspect.Inspector and
+// inspect.Lister.
 type Inspector struct {
 	runner Runner
 }
 
-var _ inspect.Inspector = (*Inspector)(nil)
+var (
+	_ inspect.Inspector = (*Inspector)(nil)
+	_ inspect.Lister    = (*Inspector)(nil)
+)
 
 // New returns an Inspector that runs the real system commands.
 func New() *Inspector {
@@ -54,25 +60,9 @@ func (i *Inspector) Inspect(ctx context.Context, q inspect.Query) (inspect.Resul
 		return inspect.Result{}, fmt.Errorf("invalid query: %w", err)
 	}
 
-	stdout, stderr, code, err := i.runner.Run(ctx, "lsof", findArgs(q)...)
+	records, err := i.findSockets(ctx, findArgs(q))
 	if err != nil {
-		return inspect.Result{}, runError("lsof", err)
-	}
-	// lsof exits 1 with no output when nothing matches; a failure is
-	// distinguished by stderr text or another exit code. Warnings (for
-	// example about an inaccessible file system) do not signal a failure.
-	noMatch := code == 1 && withoutWarnings(stderr) == ""
-	if code != 0 && !noMatch {
-		return inspect.Result{}, exitError("lsof", code, stderr)
-	}
-
-	records, err := parseRecords(stdout)
-	if err != nil {
-		return inspect.Result{}, &inspect.Error{
-			Kind: inspect.KindCommandFailed,
-			Op:   "lsof",
-			Err:  fmt.Errorf("parsing output: %w", err),
-		}
+		return inspect.Result{}, err
 	}
 
 	// Enrichment failures are recorded per field, so a cancelled context
@@ -90,9 +80,58 @@ func (i *Inspector) Inspect(ctx context.Context, q inspect.Query) (inspect.Resul
 	return inspect.Result{Query: q, Owners: owners}, nil
 }
 
+// List reports every process holding a listening TCP or bound UDP socket,
+// on any port. Names and users come from the lsof listing itself and no
+// per-process command runs, so Command and WorkingDir are left unset.
+func (i *Inspector) List(ctx context.Context) (inspect.Snapshot, error) {
+	taken := time.Now()
+
+	records, err := i.findSockets(ctx, listArgs())
+	if err != nil {
+		return inspect.Snapshot{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return inspect.Snapshot{}, err
+	}
+	// The zero Query matches every port and protocol.
+	return inspect.Snapshot{Taken: taken, Owners: buildOwners(records, inspect.Query{})}, nil
+}
+
+// findSockets runs lsof with args and parses its output. No matching socket
+// yields no records and a nil error.
+func (i *Inspector) findSockets(ctx context.Context, args []string) ([]processRecord, error) {
+	stdout, stderr, code, err := i.runner.Run(ctx, "lsof", args...)
+	if err != nil {
+		return nil, runError("lsof", err)
+	}
+	// lsof exits 1 with no output when nothing matches; a failure is
+	// distinguished by stderr text or another exit code. Warnings (for
+	// example about an inaccessible file system) do not signal a failure.
+	noMatch := code == 1 && withoutWarnings(stderr) == ""
+	if code != 0 && !noMatch {
+		return nil, exitError("lsof", code, stderr)
+	}
+
+	records, err := parseRecords(stdout)
+	if err != nil {
+		return nil, &inspect.Error{
+			Kind: inspect.KindCommandFailed,
+			Op:   "lsof",
+			Err:  fmt.Errorf("parsing output: %w", err),
+		}
+	}
+	return records, nil
+}
+
 func findArgs(q inspect.Query) []string {
 	selector := string(q.Protocol) + ":" + strconv.Itoa(q.Port)
 	return []string{"-nP", "-F", "pcnLTtfP0", "-i", selector}
+}
+
+// listArgs selects every internet socket; the ownership rule then drops the
+// ones with a peer.
+func listArgs() []string {
+	return []string{"-nP", "-F", "pcnLTtfP0", "-i"}
 }
 
 // withoutWarnings returns stderr without lsof warnings, trimmed. A warning

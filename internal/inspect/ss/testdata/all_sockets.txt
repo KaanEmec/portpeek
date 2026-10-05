@@ -1,0 +1,15 @@
+tcp LISTEN 0      4096   127.0.0.1:48123   0.0.0.0:*     users:(("sockets",pid=1005,fd=4))
+tcp ESTAB  0      0      127.0.0.1:48123 127.0.0.1:60166 users:(("sockets",pid=1005,fd=8))
+tcp ESTAB  0      0      127.0.0.1:60166 127.0.0.1:48123 users:(("client",pid=1020,fd=3))
+tcp LISTEN 0      4096   0.0.0.0:48124 0.0.0.0:* users:(("sockets",pid=1005,fd=10))
+tcp LISTEN 0      4096      [::]:48124    [::]:* users:(("sockets",pid=1005,fd=9))
+udp UNCONN 0      0      0.0.0.0:48125 0.0.0.0:* users:(("sockets",pid=1005,fd=11))
+udp UNCONN 0      0        [::1]:48125    [::]:* users:(("sockets",pid=1005,fd=12))
+tcp LISTEN 0      4096   127.0.0.1:48126 0.0.0.0:* users:(("exe",pid=1013,fd=3),("sockets",pid=1005,fd=14),("sockets",pid=1005,fd=13))
+udp UNCONN 0      0      [fe80::1234]%eth0:48127 [::]:* users:(("sockets",pid=945,fd=14))
+udp UNCONN 0      0      *:48128 *:* users:(("sockets",pid=945,fd=5))
+tcp LISTEN 0      4096   *:48128 *:* users:(("sockets",pid=945,fd=4))
+udp ESTAB  0      0      10.0.0.5:41234 192.0.2.1:53 users:(("resolver",pid=1030,fd=7))
+tcp UNCONN 0      0      127.0.0.1:48132 0.0.0.0:* users:(("sockets",pid=945,fd=15))
+tcp LISTEN 0      4096   127.0.0.1:48133   0.0.0.0:*    
+tcp ESTAB  0      0      127.0.0.1:48133 127.0.0.1:60170

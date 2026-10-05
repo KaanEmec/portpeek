@@ -15,7 +15,8 @@ internal/inspect/lsof   macOS adapter: runs `lsof`, parses -F output, enriches w
 internal/inspect/ss     Linux adapter: runs `ss`, parses rows, enriches from /proc
 internal/inspect/netstat Windows adapter: `netstat -ano` per protocol, PowerShell Win32_Process
 cmd/portpeek/platform_* build-tagged selection of the default Inspector per OS
-internal/tui            v1.1: Bubble Tea overview, reuses inspect + cli formatting
+internal/tui            `portpeek tui`: Bubble Tea table over `Lister`, details via `Inspector`,
+                        stop via the shared core in internal/cli
 ```
 
 Data flow: `cli` builds a `Query` → platform `Inspector.Inspect` → `Result` → `cli` renders.
@@ -34,6 +35,9 @@ seam so parsers are tested against recorded fixtures, not live sockets.
   all-interfaces / specific-interface from the address. No claims about firewalls.
 - `Process{PID, Name, User, Command, WorkingDir}` with `Unavailable map[Field]string`
   recording why a field could not be read (permission, process exited, tool limit).
+- `Lister.List` returns a `Snapshot{Taken, Owners}` of every listening TCP and bound UDP
+  socket, cheaply: PID/name/user from the listing only, no per-process enrichment. The
+  TUI lists with it and calls `Inspect` on one port for details.
 - `Error{Kind, Op, Err}` with kinds `ToolMissing`, `PermissionDenied`, `CommandFailed`,
   `Unsupported`. The CLI maps kinds to messages and exit codes; adapters never print.
   With `--json`, inspection errors go to stdout as `{"schema":1,"error":{kind,message}}`;
@@ -89,6 +93,6 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 | v0.1 macOS answer | done 2026-10-05 | model, CLI, lsof adapter, validation record in docs/validation.md |
 | v0.2 safe control + Linux | done 2026-10-05 | `--stop` flow; `ss`/procfs adapter validated in Docker (golang:1.27, iproute2 6.15) and CI ubuntu runner |
 | v1.0 cross-platform release | code complete, release blocked | Windows adapter unverified until a Windows CI run; GoReleaser + release workflow ready; needs a real remote/module path and licence confirmation before tagging |
-| v1.1 port TUI | planned | inventory API on adapters, Bubble Tea table + details |
+| v1.1 port TUI | in progress | `Lister` on all adapters; Bubble Tea table, details, refresh, search, stop from details |
 
 Out of scope: remote scanning, Docker management, traffic measurement, history.

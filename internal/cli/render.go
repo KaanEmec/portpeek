@@ -32,21 +32,31 @@ func render(w io.Writer, q inspect.Query, owners []inspect.Owner, asJSON bool) e
 	if asJSON {
 		return writeJSON(w, q, owners)
 	}
-
-	var text string
-	hint := completenessHint(owners)
-	switch {
-	case len(owners) == 0:
-		text = fmt.Sprintf("No listening or bound socket on port %d (%s).\n", q.Port, protocolPhrase(q))
-		text += hint
-	default:
-		text = renderText(q, owners)
-		if hint != "" {
-			text += "\n" + hint
-		}
-	}
-	_, err := io.WriteString(w, text)
+	_, err := io.WriteString(w, RenderText(q, owners))
 	return err
+}
+
+// RenderText returns the text answer for a query exactly as `portpeek <port>`
+// prints it: the owners, or the no-match line, followed by the completeness
+// hint when the answer may be incomplete. The terminal interface uses it so
+// both describe a port in the same words.
+func RenderText(q inspect.Query, owners []inspect.Owner) string {
+	hint := completenessHint(owners)
+	if len(owners) == 0 {
+		return fmt.Sprintf("No listening or bound socket on port %d (%s).\n", q.Port, protocolPhrase(q)) + hint
+	}
+	text := renderText(q, owners)
+	if hint != "" {
+		text += "\n" + hint
+	}
+	return text
+}
+
+// CompletenessHint returns the one-line hint, without a trailing newline,
+// that the CLI prints under a possibly incomplete answer for owners, or ""
+// when the answer is complete.
+func CompletenessHint(owners []inspect.Owner) string {
+	return strings.TrimSuffix(completenessHint(owners), "\n")
 }
 
 // isUnknownOwner reports whether an adapter listed a socket but could not

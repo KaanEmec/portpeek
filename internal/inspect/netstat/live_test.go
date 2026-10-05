@@ -4,8 +4,10 @@ package netstat
 
 import (
 	"context"
+	"maps"
 	"net"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -124,4 +126,87 @@ func TestInspector_Inspect_Live(t *testing.T) {
 			t.Errorf("Owners = %+v, want none", res.Owners)
 		}
 	})
+}
+
+// TestInspector_List_Live runs the real netstat listing against sockets this
+// test process opens. It is skipped with -short.
+func TestInspector_List_Live(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live netstat test skipped in -short mode")
+	}
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	// A client connection to the listener: neither end may show up.
+	client, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	accepted, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	t.Cleanup(func() { _ = accepted.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+
+	snap, err := New().List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if snap.Taken.IsZero() {
+		t.Error("Taken is zero")
+	}
+	idx := slices.IndexFunc(snap.Owners, func(o inspect.Owner) bool { return o.Process.PID == os.Getpid() })
+	if idx < 0 {
+		t.Fatalf("pid %d not among %d owners", os.Getpid(), len(snap.Owners))
+	}
+	self := snap.Owners[idx]
+
+	want := []inspect.Socket{
+		{
+			Protocol: inspect.TCP,
+			Family:   inspect.IPv4,
+			Address:  "127.0.0.1",
+			Port:     ln.Addr().(*net.TCPAddr).Port,
+			State:    inspect.StateListen,
+		},
+		{
+			Protocol: inspect.UDP,
+			Family:   inspect.IPv4,
+			Address:  "127.0.0.1",
+			Port:     pc.LocalAddr().(*net.UDPAddr).Port,
+			State:    inspect.StateBound,
+		},
+	}
+	for _, s := range want {
+		if !slices.Contains(self.Sockets, s) {
+			t.Errorf("socket %+v missing from %+v", s, self.Sockets)
+		}
+	}
+	// netstat reports only the PID and PowerShell is not run.
+	p := self.Process
+	wantUnavailable := map[inspect.Field]string{inspect.FieldUser: reasonNotOnWindows}
+	if p.Name != "" || p.Command != "" || p.WorkingDir != "" || !maps.Equal(p.Unavailable, wantUnavailable) {
+		t.Errorf("Process = %+v, want only PID and User unavailable", p)
+	}
+
+	clientPort := client.LocalAddr().(*net.TCPAddr).Port
+	for _, s := range self.Sockets {
+		if s.Port == clientPort {
+			t.Errorf("client ephemeral port %d listed as owned: %+v", clientPort, s)
+		}
+	}
 }

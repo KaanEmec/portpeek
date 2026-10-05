@@ -107,10 +107,11 @@ func parsePID(s string) (int, error) {
 
 // buildOwners applies the ownership rule to parsed rows and groups the
 // surviving sockets by PID. A process owns the queried port only through a
-// socket bound to that port locally with no peer. Sockets netstat reported
-// with PID 0 are grouped under one Owner with PID unknownPID, because their
-// owner cannot be told apart. Owners are sorted by PID with the unknown
-// owner last; sockets by protocol, family, then address.
+// socket bound to that port locally with no peer; q.Port 0 matches every
+// port, which is how List uses it. Sockets netstat reported with PID 0 are
+// grouped under one Owner with PID unknownPID, because their owner cannot
+// be told apart. Owners are sorted by PID with the unknown owner last;
+// sockets by port, protocol, family, then address.
 func buildOwners(rows []row, q inspect.Query) []inspect.Owner {
 	byPID := map[int]*inspect.Owner{}
 	for _, r := range rows {
@@ -189,7 +190,8 @@ func needsEnrichment(pid int) bool {
 }
 
 // ownedSocket converts a row into a Socket if the socket owns the queried
-// port according to the ownership rule.
+// port according to the ownership rule. A query for port 0 accepts any
+// port.
 func ownedSocket(r row, q inspect.Query) (inspect.Socket, bool) {
 	if q.Protocol != "" && q.Protocol != r.protocol {
 		return inspect.Socket{}, false
@@ -200,7 +202,7 @@ func ownedSocket(r row, q inspect.Query) (inspect.Socket, bool) {
 		return inspect.Socket{}, false
 	}
 	addr, family, port, ok := parseLocal(r.local)
-	if !ok || port != q.Port {
+	if !ok || !matchesPort(port, q.Port) {
 		return inspect.Socket{}, false
 	}
 
@@ -224,6 +226,13 @@ func ownedSocket(r row, q inspect.Query) (inspect.Socket, bool) {
 		Port:     port,
 		State:    state,
 	}, true
+}
+
+// matchesPort reports whether a socket's local port satisfies a wanted port,
+// where wanted 0 means any port. Local port 0 is never bound, so it never
+// matches.
+func matchesPort(port, wanted int) bool {
+	return port != 0 && (wanted == 0 || port == wanted)
 }
 
 // isWildcardPeer reports whether a foreign address column means "no peer":
@@ -300,10 +309,10 @@ func withZone(addr, zone string) string {
 
 func compareSockets(a, b inspect.Socket) int {
 	return cmp.Or(
+		cmp.Compare(a.Port, b.Port),
 		cmp.Compare(a.Protocol, b.Protocol),
 		cmp.Compare(a.Family, b.Family),
 		cmp.Compare(a.Address, b.Address),
-		cmp.Compare(a.Port, b.Port),
 		cmp.Compare(a.State, b.State),
 	)
 }

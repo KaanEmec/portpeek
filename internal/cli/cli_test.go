@@ -630,7 +630,7 @@ Port 3000/tcp is used by python3 (PID 500)
 			}
 			var stdout, stderr bytes.Buffer
 
-			code := Run(t.Context(), tt.args, &stdout, &stderr, fake)
+			code := Run(t.Context(), tt.args, &stdout, &stderr, Deps{Inspector: fake})
 
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d", code, tt.wantCode)
@@ -660,7 +660,7 @@ func TestRun_JSONNeverNull(t *testing.T) {
 	fake := &fakeInspector{result: inspect.Result{Owners: []inspect.Owner{owner}}}
 	var stdout, stderr bytes.Buffer
 
-	code := Run(t.Context(), []string{"3000", "--json"}, &stdout, &stderr, fake)
+	code := Run(t.Context(), []string{"3000", "--json"}, &stdout, &stderr, Deps{Inspector: fake})
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -676,7 +676,7 @@ func TestRun_Version(t *testing.T) {
 	t.Cleanup(func() { Version = old })
 
 	var stdout, stderr bytes.Buffer
-	code := Run(t.Context(), []string{"--version"}, &stdout, &stderr, &fakeInspector{})
+	code := Run(t.Context(), []string{"--version"}, &stdout, &stderr, Deps{Inspector: &fakeInspector{}})
 
 	if code != 0 || stdout.String() != "portpeek 1.2.3\n" {
 		t.Errorf("got code %d, stdout %q", code, stdout.String())
@@ -741,7 +741,7 @@ func TestRun_Unprivileged(t *testing.T) {
 			fake := &fakeInspector{result: inspect.Result{Owners: tt.owners}}
 			var stdout, stderr bytes.Buffer
 
-			code := Run(t.Context(), tt.args, &stdout, &stderr, fake)
+			code := Run(t.Context(), tt.args, &stdout, &stderr, Deps{Inspector: fake})
 
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d", code, tt.wantCode)

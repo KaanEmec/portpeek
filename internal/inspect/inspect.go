@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 )
 
 // Protocol is a transport protocol a socket uses.
@@ -159,6 +160,22 @@ type Result struct {
 // Inspector finds the local owners of a port.
 type Inspector interface {
 	Inspect(ctx context.Context, q Query) (Result, error)
+}
+
+// Snapshot is every locally bound socket at one moment, grouped by owner. It
+// is cheap by design: adapters fill Process.PID, Name and User from the
+// socket listing only and skip per-process enrichment, so Command and
+// WorkingDir are unset (not marked unavailable). Use Inspector.Inspect on one
+// port for the full answer.
+type Snapshot struct {
+	Taken  time.Time
+	Owners []Owner
+}
+
+// Lister enumerates all local listening TCP and bound UDP sockets. The same
+// ownership rule as Inspect applies: sockets with a peer are never included.
+type Lister interface {
+	List(ctx context.Context) (Snapshot, error)
 }
 
 // Kind categorises an inspection failure.

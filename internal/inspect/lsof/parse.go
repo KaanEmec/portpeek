@@ -103,8 +103,9 @@ func setFileField(f *fileRecord, id byte, value string) {
 // buildOwners applies the ownership rule to parsed records and groups the
 // surviving sockets by PID. A process owns the queried port only through a
 // socket bound to that port locally with no peer: a TCP listener, a TCP
-// socket bound without listening, or an unconnected UDP socket. Processes
-// left with no owned socket are dropped. Owners are sorted by PID; sockets by
+// socket bound without listening, or an unconnected UDP socket. q.Port 0
+// matches every port, which is how List uses it. Processes left with no
+// owned socket are dropped. Owners are sorted by PID; sockets by port,
 // protocol, family, then address.
 func buildOwners(records []processRecord, q inspect.Query) []inspect.Owner {
 	byPID := map[int]*inspect.Owner{}
@@ -154,7 +155,8 @@ func newProcess(rec processRecord) inspect.Process {
 }
 
 // ownedSocket converts a file record into a Socket if it is owned by its
-// process on the queried port according to the ownership rule.
+// process on the queried port according to the ownership rule. A query for
+// port 0 accepts any port.
 func ownedSocket(f fileRecord, q inspect.Query) (inspect.Socket, bool) {
 	var family inspect.Family
 	switch f.family {
@@ -186,7 +188,7 @@ func ownedSocket(f fileRecord, q inspect.Query) (inspect.Socket, bool) {
 	}
 
 	host, port, ok := splitAddress(f.name)
-	if !ok || port != q.Port {
+	if !ok || !matchesPort(port, q.Port) {
 		return inspect.Socket{}, false
 	}
 	if family == inspect.IPv6 {
@@ -206,6 +208,13 @@ func ownedSocket(f fileRecord, q inspect.Query) (inspect.Socket, bool) {
 		Port:     port,
 		State:    state,
 	}, true
+}
+
+// matchesPort reports whether a socket's local port satisfies a wanted port,
+// where wanted 0 means any port. Local port 0 is never bound, so it never
+// matches.
+func matchesPort(port, wanted int) bool {
+	return port != 0 && (wanted == 0 || port == wanted)
 }
 
 // splitAddress splits an lsof network name such as "127.0.0.1:3000",
@@ -263,10 +272,10 @@ func unpackScope(host string) string {
 
 func compareSockets(a, b inspect.Socket) int {
 	return cmp.Or(
+		cmp.Compare(a.Port, b.Port),
 		cmp.Compare(a.Protocol, b.Protocol),
 		cmp.Compare(a.Family, b.Family),
 		cmp.Compare(a.Address, b.Address),
-		cmp.Compare(a.Port, b.Port),
 		cmp.Compare(a.State, b.State),
 	)
 }

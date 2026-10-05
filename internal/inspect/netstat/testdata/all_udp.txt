@@ -1,0 +1,6 @@
+
+Active Connections
+
+  Proto  Local Address          Foreign Address        State           PID
+  UDP    0.0.0.0:3000           *:*                                    1234
+  UDP    0.0.0.0:5353           *:*                                    2424

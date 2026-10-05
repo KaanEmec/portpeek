@@ -75,10 +75,18 @@ func (s stopRun) stop(ctx context.Context, owners []inspect.Owner, opts options)
 			return code
 		}
 	}
-	if proceed, code := s.recheck(ctx, target); !proceed {
-		return code
+
+	res := stopVerified(ctx, s.ins, s.query, target, s.sys)
+	switch {
+	case res.Interrupted:
+		return reportInterrupted(s.out.stderr)
+	case !res.Sent:
+		s.errorf("%s", res.Message)
+		return exitNotStopped
+	default:
+		_, _ = fmt.Fprintln(s.out.stdout, res.Message)
+		return exitOK
 	}
-	return s.terminate(target)
 }
 
 // choose picks the process to stop and refuses an unknown owner, which has no
@@ -151,59 +159,92 @@ func (s stopRun) confirm(ctx context.Context, p inspect.Process) (proceed bool, 
 	}
 }
 
-// recheck re-inspects the port right before signalling and requires that p
-// still owns it under the same name, so a PID that exited or was reused since
-// the first inspection never receives a signal.
-func (s stopRun) recheck(ctx context.Context, p inspect.Process) (proceed bool, code int) {
-	res, err := s.ins.Inspect(ctx, s.query)
-	if errors.Is(err, context.Canceled) {
-		return false, reportInterrupted(s.out.stderr)
-	}
-	if err != nil {
-		s.errorf("could not recheck port %d: %v; nothing was stopped", s.query.Port, err)
-		return false, exitNotStopped
-	}
-
-	i := slices.IndexFunc(res.Owners, func(o inspect.Owner) bool { return o.Process.PID == p.PID })
-	if i < 0 || res.Owners[i].Process.Name != p.Name {
-		s.errorf("process changed since inspection; nothing was stopped")
-		return false, exitNotStopped
-	}
-	return true, exitOK
+// StopResult is the outcome of StopVerified.
+type StopResult struct {
+	// Sent reports whether SIGTERM was delivered.
+	Sent bool
+	// Exited reports whether the process was gone within the wait after
+	// SIGTERM. It is false when nothing was sent.
+	Exited bool
+	// Interrupted reports that ctx ended during the recheck; nothing was
+	// sent and Message is empty.
+	Interrupted bool
+	// Message is the one-line report in the CLI's wording, without the
+	// "portpeek: " prefix or a trailing newline: the outcome when Sent, or
+	// why nothing was stopped.
+	Message string
 }
 
-// terminate sends SIGTERM to p and reports whether it exited within
-// stopWait. It never escalates to SIGKILL; it prints the command instead.
-func (s stopRun) terminate(p inspect.Process) int {
-	if err := s.sys.terminate(p.PID); err != nil {
-		s.errorf("could not signal PID %d: %v", p.PID, err)
-		return exitNotStopped
+// StopVerified stops target, a process the caller showed as owning q's port
+// and the user confirmed. It re-inspects the port right before signalling and
+// requires that target's PID still owns it under the same name, so a PID that
+// exited or was reused since it was shown never receives a signal. It then
+// sends SIGTERM, waits up to 2s for the process to exit, and never escalates
+// to SIGKILL. An unknown owner (PID 0) is always refused.
+//
+// Choosing among several owners and asking for confirmation stay with the
+// caller; StopVerified is the part the CLI's --stop and the terminal
+// interface share.
+func StopVerified(ctx context.Context, ins inspect.Inspector, q inspect.Query, target inspect.Process) StopResult {
+	return stopVerified(ctx, ins, q, target, systemStopper())
+}
+
+// stopVerified is StopVerified with the side effects injected.
+func stopVerified(
+	ctx context.Context,
+	ins inspect.Inspector,
+	q inspect.Query,
+	target inspect.Process,
+	sys stopper,
+) StopResult {
+	if isUnknownOwner(target) || target.PID < 0 {
+		return StopResult{Message: fmt.Sprintf("owner of port %d is unknown; nothing was stopped", q.Port)}
 	}
 
-	name := headlineProcess(p)
-	if s.waitExit(p.PID) {
-		_, _ = fmt.Fprintf(s.out.stdout, "Sent SIGTERM to %s; process exited.\n", name)
-		return exitOK
+	res, err := ins.Inspect(ctx, q)
+	if errors.Is(err, context.Canceled) {
+		return StopResult{Interrupted: true}
 	}
-	_, _ = fmt.Fprintf(
-		s.out.stdout,
-		"Sent SIGTERM to %s; still running after %s. To force: kill -9 %d\n",
-		name,
-		stopWait,
-		p.PID,
-	)
-	return exitOK
+	if err != nil {
+		return StopResult{Message: fmt.Sprintf("could not recheck port %d: %v; nothing was stopped", q.Port, err)}
+	}
+	i := slices.IndexFunc(res.Owners, func(o inspect.Owner) bool { return o.Process.PID == target.PID })
+	if i < 0 || res.Owners[i].Process.Name != target.Name {
+		return StopResult{Message: "process changed since inspection; nothing was stopped"}
+	}
+
+	if err := sys.terminate(target.PID); err != nil {
+		return StopResult{Message: fmt.Sprintf("could not signal PID %d: %v", target.PID, err)}
+	}
+
+	name := headlineProcess(target)
+	if waitExit(sys, target.PID) {
+		return StopResult{
+			Sent:    true,
+			Exited:  true,
+			Message: fmt.Sprintf("Sent SIGTERM to %s; process exited.", name),
+		}
+	}
+	return StopResult{
+		Sent: true,
+		Message: fmt.Sprintf(
+			"Sent SIGTERM to %s; still running after %s. To force: kill -9 %d",
+			name,
+			stopWait,
+			target.PID,
+		),
+	}
 }
 
 // waitExit polls until pid is gone or stopWait has passed.
-func (s stopRun) waitExit(pid int) bool {
+func waitExit(sys stopper, pid int) bool {
 	for range int(stopWait / stopPollInterval) {
-		if !s.sys.alive(pid) {
+		if !sys.alive(pid) {
 			return true
 		}
-		s.sys.sleep(stopPollInterval)
+		sys.sleep(stopPollInterval)
 	}
-	return !s.sys.alive(pid)
+	return !sys.alive(pid)
 }
 
 // errorf writes a "portpeek: " prefixed line to stderr.

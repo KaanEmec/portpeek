@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
@@ -37,6 +39,9 @@ func (f fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte,
 func findKey(port int) string {
 	return fmt.Sprintf("ss -H -a -n -p -t -u sport = :%d", port)
 }
+
+// listKey is the fakeRunner key of the List discovery command.
+const listKey = "ss -H -a -n -p -t -u"
 
 // newTestInspector returns an Inspector running r and reading procRoot.
 func newTestInspector(r Runner, procRoot string) *Inspector {
@@ -323,6 +328,185 @@ func TestInspector_Inspect_Cancelled(t *testing.T) {
 	if len(got.Owners) != 0 {
 		t.Errorf("Owners = %+v, want none on cancellation", got.Owners)
 	}
+}
+
+// all_sockets.txt is not a recording: ss cannot run on the macOS machine
+// where List was written. It is assembled from rows of the recorded
+// fixtures (tcp4_listener, established_mixed, dual_stack_same_pid,
+// udp_unconn, two_pids, link_local, dual_stack_wildcard,
+// tcp_bound_not_listening, no_users with its port moved to 48133) plus two
+// constructed rows: the client end of the established connection (PID 1020)
+// and a connected UDP socket (PID 1030).
+func TestInspector_List(t *testing.T) {
+	t.Parallel()
+
+	runner := fakeRunner{listKey: {stdout: string(readFixture(t, "all_sockets.txt"))}}
+	// procfs is never read by List.
+	missing := filepath.Join(t.TempDir(), "no-proc")
+	before := time.Now()
+	got, err := newTestInspector(runner, missing).List(context.Background())
+	after := time.Now()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got.Taken.Before(before) || got.Taken.After(after) {
+		t.Errorf("Taken = %v, want between %v and %v", got.Taken, before, after)
+	}
+
+	// PIDs 1020 and 1030 hold only connections. User, Command and
+	// WorkingDir stay unset; only the unknown owner has fields marked
+	// unavailable, and only Name and User.
+	unknown := inspect.Process{
+		PID: unknownPID,
+		Unavailable: map[inspect.Field]string{
+			inspect.FieldName: reasonHidden,
+			inspect.FieldUser: reasonHidden,
+		},
+	}
+	want := []inspect.Owner{
+		{
+			Process: proc(945, "sockets"),
+			Sockets: []inspect.Socket{
+				udpBound(inspect.IPv6, "fe80::1234%eth0", 48127),
+				tcpListen(inspect.IPv6, "*", 48128),
+				udpBound(inspect.IPv6, "*", 48128),
+				tcpBound(inspect.IPv4, "127.0.0.1", 48132),
+			},
+		},
+		{
+			Process: proc(1005, "sockets"),
+			Sockets: []inspect.Socket{
+				tcpListen(inspect.IPv4, "127.0.0.1", 48123),
+				tcpListen(inspect.IPv4, "*", 48124),
+				tcpListen(inspect.IPv6, "*", 48124),
+				udpBound(inspect.IPv4, "*", 48125),
+				udpBound(inspect.IPv6, "::1", 48125),
+				tcpListen(inspect.IPv4, "127.0.0.1", 48126),
+			},
+		},
+		{
+			Process: proc(1013, "exe"),
+			Sockets: []inspect.Socket{tcpListen(inspect.IPv4, "127.0.0.1", 48126)},
+		},
+		{
+			Process: unknown,
+			Sockets: []inspect.Socket{tcpListen(inspect.IPv4, "127.0.0.1", 48133)},
+		},
+	}
+	if !reflect.DeepEqual(got.Owners, want) {
+		t.Errorf("Owners =\n%+v\nwant\n%+v", got.Owners, want)
+	}
+}
+
+func TestInspector_List_NoSockets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		stdout string
+	}{
+		{name: "empty output", stdout: ""},
+		{
+			name:   "only an established connection",
+			stdout: "tcp ESTAB 0 0 127.0.0.1:48123 127.0.0.1:60166 users:((\"sockets\",pid=1005,fd=8))\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runner := fakeRunner{listKey: {stdout: tt.stdout}}
+			got, err := newTestInspector(runner, t.TempDir()).List(context.Background())
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if got.Owners == nil || len(got.Owners) != 0 {
+				t.Errorf("Owners = %#v, want empty non-nil slice", got.Owners)
+			}
+			if got.Taken.IsZero() {
+				t.Error("Taken is zero")
+			}
+		})
+	}
+}
+
+func TestInspector_List_Errors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resp     response
+		wantKind inspect.Kind
+		wantText string
+	}{
+		{
+			name:     "ss not installed",
+			resp:     response{code: -1, err: &exec.Error{Name: "ss", Err: exec.ErrNotFound}},
+			wantKind: inspect.KindToolMissing,
+		},
+		{
+			name:     "permission denied on stderr",
+			resp:     response{code: 1, stderr: "Cannot open netlink socket: Permission denied\n"},
+			wantKind: inspect.KindPermissionDenied,
+		},
+		{
+			name:     "unsupported option on an old ss",
+			resp:     response{code: 255, stderr: "ss: invalid option -- 'H'\n"},
+			wantKind: inspect.KindCommandFailed,
+			wantText: "invalid option",
+		},
+		{
+			name:     "row without a Netid column",
+			resp:     response{stdout: "LISTEN 0 4096 *:48128 *:* users:((\"sockets\",pid=945,fd=4))\n"},
+			wantKind: inspect.KindCommandFailed,
+			wantText: "missing Netid column",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runner := fakeRunner{listKey: tt.resp}
+			_, err := newTestInspector(runner, t.TempDir()).List(context.Background())
+			ie, ok := errors.AsType[*inspect.Error](err)
+			if !ok || ie.Kind != tt.wantKind || ie.Op != "ss" {
+				t.Fatalf("List error = %#v, want *inspect.Error of kind %q for ss", err, tt.wantKind)
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Errorf("error %q does not contain %q", err, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestInspector_List_Cancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	runner := cancellingRunner{
+		fakeRunner: fakeRunner{listKey: {stdout: string(readFixture(t, "all_sockets.txt"))}},
+		cancel:     cancel,
+	}
+
+	got, err := newTestInspector(runner, t.TempDir()).List(ctx)
+
+	if _, isInspect := errors.AsType[*inspect.Error](err); !errors.Is(err, context.Canceled) || isInspect {
+		t.Errorf("List error = %#v, want plain context.Canceled", err)
+	}
+	if len(got.Owners) != 0 {
+		t.Errorf("Owners = %+v, want none on cancellation", got.Owners)
+	}
+}
+
+func tcpListen(family inspect.Family, addr string, port int) inspect.Socket {
+	return inspect.Socket{Protocol: inspect.TCP, Family: family, Address: addr, Port: port, State: inspect.StateListen}
+}
+
+func tcpBound(family inspect.Family, addr string, port int) inspect.Socket {
+	return inspect.Socket{Protocol: inspect.TCP, Family: family, Address: addr, Port: port, State: inspect.StateBound}
+}
+
+func udpBound(family inspect.Family, addr string, port int) inspect.Socket {
+	return inspect.Socket{Protocol: inspect.UDP, Family: family, Address: addr, Port: port, State: inspect.StateBound}
 }
 
 func TestExecRunner_Run(t *testing.T) {

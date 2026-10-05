@@ -1,7 +1,8 @@
 // Package ss is the Linux inspection adapter. It finds port owners with
 // `ss` (iproute2) and enriches each owning process from procfs: name from
 // /proc/PID/comm, command from /proc/PID/cmdline, working directory from
-// /proc/PID/cwd, and user from the Uid line of /proc/PID/status.
+// /proc/PID/cwd, and user from the Uid line of /proc/PID/status. Listing
+// every local port uses the same ss output and skips procfs.
 package ss
 
 import (
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
@@ -23,14 +25,18 @@ type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, exitCode int, err error)
 }
 
-// Inspector finds port owners on Linux. It implements inspect.Inspector.
+// Inspector finds port owners on Linux. It implements inspect.Inspector and
+// inspect.Lister.
 type Inspector struct {
 	runner Runner
 	// procRoot is the procfs mount point; tests point it at a fixture tree.
 	procRoot string
 }
 
-var _ inspect.Inspector = (*Inspector)(nil)
+var (
+	_ inspect.Inspector = (*Inspector)(nil)
+	_ inspect.Lister    = (*Inspector)(nil)
+)
 
 // New returns an Inspector that runs the real ss and reads /proc.
 func New() *Inspector {
@@ -51,23 +57,9 @@ func (i *Inspector) Inspect(ctx context.Context, q inspect.Query) (inspect.Resul
 		return inspect.Result{}, fmt.Errorf("invalid query: %w", err)
 	}
 
-	stdout, stderr, code, err := i.runner.Run(ctx, "ss", findArgs(q)...)
+	rows, err := i.findSockets(ctx, findArgs(q), q.Protocol)
 	if err != nil {
-		return inspect.Result{}, runError("ss", err)
-	}
-	// ss prints nothing and exits 0 when no socket matches the filter, so
-	// any non-zero exit is a failure.
-	if code != 0 {
-		return inspect.Result{}, exitError("ss", code, stderr)
-	}
-
-	rows, err := parseRows(stdout, q.Protocol)
-	if err != nil {
-		return inspect.Result{}, &inspect.Error{
-			Kind: inspect.KindCommandFailed,
-			Op:   "ss",
-			Err:  fmt.Errorf("parsing output: %w", err),
-		}
+		return inspect.Result{}, err
 	}
 
 	// Enrichment failures are recorded per field, so a cancelled context
@@ -87,6 +79,58 @@ func (i *Inspector) Inspect(ctx context.Context, q inspect.Query) (inspect.Resul
 	return inspect.Result{Query: q, Owners: owners}, nil
 }
 
+// List reports every process holding a listening TCP or bound UDP socket,
+// on any port. Names come from the ss process column and procfs is not
+// read, so User, Command and WorkingDir are left unset. Sockets ss lists
+// without a process are grouped under the unknown owner, as in Inspect.
+func (i *Inspector) List(ctx context.Context) (inspect.Snapshot, error) {
+	taken := time.Now()
+
+	// Both tables are queried, so every row carries its Netid column.
+	rows, err := i.findSockets(ctx, listArgs(), "")
+	if err != nil {
+		return inspect.Snapshot{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return inspect.Snapshot{}, err
+	}
+	// The zero Query matches every port and protocol.
+	owners := buildOwners(rows, inspect.Query{})
+	for idx := range owners {
+		// A snapshot leaves Command and WorkingDir unset rather than
+		// unavailable; only the unknown owner was marked for them.
+		p := &owners[idx].Process
+		delete(p.Unavailable, inspect.FieldCommand)
+		delete(p.Unavailable, inspect.FieldWorkingDir)
+	}
+	return inspect.Snapshot{Taken: taken, Owners: owners}, nil
+}
+
+// findSockets runs ss with args and parses its output, using fallback as the
+// protocol of rows without a Netid column. No matching socket yields no rows
+// and a nil error.
+func (i *Inspector) findSockets(ctx context.Context, args []string, fallback inspect.Protocol) ([]row, error) {
+	stdout, stderr, code, err := i.runner.Run(ctx, "ss", args...)
+	if err != nil {
+		return nil, runError("ss", err)
+	}
+	// ss prints nothing and exits 0 when no socket matches the filter, so
+	// any non-zero exit is a failure.
+	if code != 0 {
+		return nil, exitError("ss", code, stderr)
+	}
+
+	rows, err := parseRows(stdout, fallback)
+	if err != nil {
+		return nil, &inspect.Error{
+			Kind: inspect.KindCommandFailed,
+			Op:   "ss",
+			Err:  fmt.Errorf("parsing output: %w", err),
+		}
+	}
+	return rows, nil
+}
+
 // findArgs builds `ss -H -a -n -p -t -u 'sport = :PORT'`, dropping -t or -u
 // when the query names one protocol. -H drops the header, -a includes
 // non-listening sockets (UDP, TCP bound without listen), -n keeps addresses
@@ -102,6 +146,12 @@ func findArgs(q inspect.Query) []string {
 		args = append(args, "-t", "-u")
 	}
 	return append(args, "sport = :"+strconv.Itoa(q.Port))
+}
+
+// listArgs builds `ss -H -a -n -p -t -u`: the flags of findArgs for both
+// protocols, without a port filter.
+func listArgs() []string {
+	return []string{"-H", "-a", "-n", "-p", "-t", "-u"}
 }
 
 func isPermissionError(stderr []byte) bool {

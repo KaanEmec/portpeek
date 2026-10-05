@@ -72,7 +72,7 @@ func TestRun_StopLive(t *testing.T) {
 	port := strings.TrimSpace(line)
 
 	var stdout, stderr bytes.Buffer
-	code := Run(ctx, []string{port, "--tcp", "--stop", "--force"}, &stdout, &stderr, lsof.New())
+	code := Run(ctx, []string{port, "--tcp", "--stop", "--force"}, &stdout, &stderr, Deps{Inspector: lsof.New()})
 
 	if code != exitOK {
 		t.Fatalf("exit code = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, exitOK, stdout.String(), stderr.String())
