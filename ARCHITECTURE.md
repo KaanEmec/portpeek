@@ -12,7 +12,8 @@ internal/cli            argument parsing, text/JSON rendering, exit codes
 internal/inspect        shared model: Query, Result, Owner, Socket, Process, Error kinds,
                         Inspector interface, exposure classification
 internal/inspect/lsof   macOS adapter: runs `lsof`, parses -F output, enriches with `ps`
-internal/inspect/<os>   later: linux (ss/procfs), windows (PowerShell/API)
+internal/inspect/ss     Linux adapter: runs `ss`, parses rows, enriches from /proc
+internal/inspect/<os>   later: windows (PowerShell/API)
 cmd/portpeek/platform_* build-tagged selection of the default Inspector per OS
 internal/tui            v1.1: Bubble Tea overview, reuses inspect + cli formatting
 ```
@@ -41,18 +42,24 @@ that has no peer: TCP in LISTEN (reported `LISTEN`) or TCP bound without listen 
 UDP (reported `BOUND`). Sockets with a peer (established connections, connected UDP)
 are never owners, because they do not block the port.
 
-Visibility: without root, `lsof` silently omits other users' sockets. Every
-unprivileged answer therefore carries a hint line in text and `"complete": false`
-in JSON; "no listening or bound socket" never claims the port is free.
+Visibility: without root, macOS `lsof` silently omits other users' sockets, while
+Linux `ss` lists them without a process. The adapter then returns an owner with
+`PID 0` and every field marked unavailable; the CLI renders it as "an unknown
+process", never prints a stop command for it, and refuses `--stop`. An answer is
+`"complete": false` when unprivileged or when any owner is unknown, and text carries
+a matching hint line. "No listening or bound socket" never claims the port is free.
 
 ## CLI contract (internal/cli)
 
 ```
 portpeek <port> [--tcp|--udp] [--json]
+portpeek <port> --stop [--pid N] [--force]
 ```
 
-Exit codes: `0` at least one owner, `1` no matching socket, `2` invalid input/usage,
-`3` inspection failed (tool missing, permission denied, command error), `130` interrupted.
+Exit codes: `0` at least one owner (with `--stop`: SIGTERM sent), `1` no matching
+socket, `2` invalid input/usage, `3` inspection failed (tool missing, permission
+denied, command error), `4` stop not performed (declined, ambiguous, stale identity,
+signal failed), `130` interrupted.
 Text output lists each owner with labelled fields; unavailable fields print the reason,
 never a guess. Text ends with a one-line exposure explanation and a manual stop hint
 (`kill <pid>`) that the tool itself does not run. JSON (`--json`) is versioned
@@ -62,21 +69,22 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 
 | Decision | Choice | Why |
 |---|---|---|
-| Language / deps | Go, standard library for CLI; Charm libs only in `internal/tui` | Single small binary, no runtime |
+| Language / deps | Go, standard library plus `golang.org/x/term` (TTY detection for `--stop`); Charm libs only in `internal/tui` | Single small binary, no runtime. A mode-bits check mistakes `/dev/null` for a terminal |
 | macOS source | `lsof -nP -F pcnLTtfP0 -i :PORT` then `ps -o command=` and `lsof -d cwd` per PID | Machine-readable, present on every macOS, no entitlements |
+| Linux source | `ss -H -a -n -p -t -u 'sport = :PORT'` then `/proc/PID/{comm,cmdline,cwd,status}` | iproute2 is ubiquitous; procfs needs no extra tool. `-H` needs iproute2 ≥ 4.13; wildcard `*` means dual-stack IPv6, `0.0.0.0`/`[::]`/`*` all stored as `*` |
 | No-match detection | `lsof` exit 1 with empty stdout and no non-WARNING stderr = no match; otherwise failure | Observed behaviour; avoids false "nothing found" |
 | Link-local IPv6 | `lsof` packs the scope index into the second group (`fe80:1::1`); adapter rewrites to `fe80::1%lo0` | Otherwise the shown address cannot be connected to |
 | Testing | Parsers and renderers tested with recorded `lsof` fixtures; one live-socket test per adapter, skipped under `go test -short` | Deterministic CI, honest platform claims |
 | Module path | `github.com/kaanemec/portpeek` | Placeholder until a remote exists; rename is one `sed` |
 | Platform selection | `//go:build` files in `cmd/portpeek/platform_*.go` choosing the default `Inspector` (adapters import the model, so selection sits above both) | Unsupported OS fails at runtime with a clear message, not silently |
-| Stop action (v0.2) | Separate `--stop` flag: re-inspect, show PID + name, confirm on a TTY, `--force` for scripts, SIGTERM only | Stale PID can never receive a signal unreviewed |
+| Stop action | `--stop`: print the normal result, pick one owner (`--pid` when several), confirm on a TTY or require `--force`, re-inspect and require same PID + name, send SIGTERM, wait 2s, report; never SIGKILL | Stale PID can never receive a signal unreviewed; `internal/cli/stop.go` |
 
 ## Roadmap state
 
 | Version | Status | Notes |
 |---|---|---|
 | v0.1 macOS answer | done 2026-10-05 | model, CLI, lsof adapter, validation record in docs/validation.md |
-| v0.2 safe control + Linux | planned | `--stop` flow, `ss`/procfs adapter |
+| v0.2 safe control + Linux | done 2026-10-05 | `--stop` flow; `ss`/procfs adapter validated in Docker (golang:1.27, iproute2 6.15) and CI ubuntu runner |
 | v1.0 cross-platform release | planned | Windows adapter, JSON freeze, GoReleaser, CI |
 | v1.1 port TUI | planned | inventory API on adapters, Bubble Tea table + details |
 

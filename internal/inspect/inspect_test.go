@@ -13,6 +13,8 @@ func TestSocket_Exposure(t *testing.T) {
 		"192.168.1.10": ExposureInterface,
 		"fe80::1%lo0":  ExposureInterface,
 		"fe80::1%4":    ExposureInterface,
+		"*%eth0":       ExposureInterface,
+		"*%":           ExposureUnknown,
 		"":             ExposureUnknown,
 		"not-an-ip":    ExposureUnknown,
 	}

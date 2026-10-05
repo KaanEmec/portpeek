@@ -12,17 +12,26 @@ import (
 )
 
 // fakeInspector returns a fixed result and error and records the query.
+// When results is set, call n returns results[n], repeating the last one, so
+// the --stop recheck can see a different answer from the first inspection.
 type fakeInspector struct {
-	result inspect.Result
-	err    error
-	called bool
-	got    inspect.Query
+	result  inspect.Result
+	results []inspect.Result
+	err     error
+	called  bool
+	calls   int
+	got     inspect.Query
 }
 
 func (f *fakeInspector) Inspect(_ context.Context, q inspect.Query) (inspect.Result, error) {
 	f.called = true
 	f.got = q
-	return f.result, f.err
+	res := f.result
+	if len(f.results) > 0 {
+		res = f.results[min(f.calls, len(f.results)-1)]
+	}
+	f.calls++
+	return res, f.err
 }
 
 // setPrivileged overrides privileged for the rest of the test. Callers must
@@ -49,6 +58,36 @@ func nodeOwner() inspect.Owner {
 		},
 	}
 }
+
+// unknownOwner is a socket that an adapter listed without being able to
+// attribute it to a process, as the Linux adapter reports for other users'
+// sockets without root.
+func unknownOwner() inspect.Owner {
+	p := inspect.Process{Unavailable: map[inspect.Field]string{}}
+	for _, f := range []inspect.Field{
+		inspect.FieldName,
+		inspect.FieldUser,
+		inspect.FieldCommand,
+		inspect.FieldWorkingDir,
+	} {
+		p.MarkUnavailable(f, "not readable without elevated privileges")
+	}
+	return inspect.Owner{
+		Process: p,
+		Sockets: []inspect.Socket{
+			{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: inspect.StateListen},
+		},
+	}
+}
+
+const unknownText = `Port 3000/tcp is used by an unknown process
+  Owner:        unavailable (not readable without elevated privileges)
+  Address:      127.0.0.1:3000 (IPv4, LISTEN)
+  Exposure:     loopback only — accepts connections from this machine only
+  User:         unavailable (not readable without elevated privileges)
+  Command:      unavailable (not readable without elevated privileges)
+  Working dir:  unavailable (not readable without elevated privileges)
+`
 
 const nodeText = `Port 3000/tcp is used by node (PID 48213)
   Address:      127.0.0.1:3000 (IPv4, LISTEN)
@@ -143,6 +182,14 @@ func TestRun(t *testing.T) {
 	boundTCP.Sockets = []inspect.Socket{
 		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: inspect.StateBound},
 		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "fe80::1%lo0", Port: 3000, State: inspect.StateBound},
+	}
+
+	unknownNoReason := unknownOwner()
+	unknownNoReason.Process.Unavailable = map[inspect.Field]string{}
+
+	deviceBound := nodeOwner()
+	deviceBound.Sockets = []inspect.Socket{
+		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "*%eth0", Port: 3000, State: inspect.StateListen},
 	}
 
 	unavailableJSON := nodeOwner()
@@ -259,6 +306,91 @@ Port 3000/tcp is used by python3 (PID 500)
   Command:      unavailable (permission denied)
   Working dir:  unavailable (permission denied)
   Stop:         kill 77
+`,
+		},
+		{
+			name:     "unknown owner text",
+			args:     []string{"3000"},
+			owners:   []inspect.Owner{unknownOwner()},
+			wantCode: 0,
+			wantOut:  unknownText + "\n" + unknownOwnerHint,
+		},
+		{
+			name:     "unknown owner without reason",
+			args:     []string{"3000"},
+			owners:   []inspect.Owner{unknownNoReason},
+			wantCode: 0,
+			wantOut: `Port 3000/tcp is used by an unknown process
+  Owner:        unavailable
+  Address:      127.0.0.1:3000 (IPv4, LISTEN)
+  Exposure:     loopback only — accepts connections from this machine only
+  User:         unavailable
+  Command:      unavailable
+  Working dir:  unavailable
+
+` + unknownOwnerHint,
+		},
+		{
+			name:     "known and unknown owners",
+			args:     []string{"3000"},
+			owners:   []inspect.Owner{nodeOwner(), unknownOwner()},
+			wantCode: 0,
+			wantOut:  "2 processes use port 3000:\n\n" + nodeText + "\n" + unknownText + "\n" + unknownOwnerHint,
+		},
+		{
+			name:     "unknown owner json is incomplete",
+			args:     []string{"3000", "--json"},
+			owners:   []inspect.Owner{unknownOwner()},
+			wantCode: 0,
+			wantOut: `{
+  "schema": 1,
+  "query": {
+    "port": 3000,
+    "protocol": ""
+  },
+  "complete": false,
+  "owners": [
+    {
+      "process": {
+        "pid": 0,
+        "name": "",
+        "user": "",
+        "command": "",
+        "working_dir": "",
+        "unavailable": {
+          "command": "not readable without elevated privileges",
+          "name": "not readable without elevated privileges",
+          "user": "not readable without elevated privileges",
+          "working_dir": "not readable without elevated privileges"
+        }
+      },
+      "sockets": [
+        {
+          "protocol": "tcp",
+          "family": "ipv4",
+          "address": "127.0.0.1",
+          "port": 3000,
+          "state": "LISTEN",
+          "exposure": "loopback"
+        }
+      ]
+    }
+  ]
+}
+`,
+		},
+		{
+			name:     "wildcard bound to a device",
+			args:     []string{"3000"},
+			owners:   []inspect.Owner{deviceBound},
+			wantCode: 0,
+			wantOut: `Port 3000/tcp is used by node (PID 48213)
+  Address:      *%eth0:3000 (IPv4, LISTEN)
+  Exposure:     specific interface *%eth0 — accepts connections on that address only (firewall not checked)
+  User:         kaanemec
+  Command:      node server.js
+  Working dir:  /Users/kaanemec/app
+  Stop:         kill 48213
 `,
 		},
 		{
@@ -450,6 +582,14 @@ Port 3000/tcp is used by python3 (PID 500)
 				"Install it and make sure it is on your PATH.\n",
 		},
 		{
+			name:       "ss missing names its package",
+			args:       []string{"3000"},
+			inspectErr: &inspect.Error{Kind: inspect.KindToolMissing, Op: "ss", Err: errors.New("not found")},
+			wantCode:   3,
+			wantErr: "portpeek: required tool \"ss\" is not installed, so port 3000 cannot be inspected.\n" +
+				"Install it (part of the iproute2 package) and make sure it is on your PATH.\n",
+		},
+		{
 			name:       "permission denied",
 			args:       []string{"3000"},
 			inspectErr: &inspect.Error{Kind: inspect.KindPermissionDenied, Op: "lsof"},
@@ -565,6 +705,13 @@ func TestRun_Unprivileged(t *testing.T) {
 			owners:   []inspect.Owner{nodeOwner()},
 			wantCode: exitOK,
 			wantOut:  nodeText + "\n" + hiddenSocketsHint,
+		},
+		{
+			name:     "unknown owner hint replaces hidden sockets hint",
+			args:     []string{"3000"},
+			owners:   []inspect.Owner{unknownOwner()},
+			wantCode: exitOK,
+			wantOut:  unknownText + "\n" + unknownOwnerHint,
 		},
 		{
 			name:     "match json",

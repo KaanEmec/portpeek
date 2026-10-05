@@ -54,7 +54,8 @@ Exit codes:
   1  no listening or bound socket on the port
   2  invalid input
   3  inspection failed (tool missing, permission denied, command error)
-  4  --stop did not stop anything (declined, ambiguous, changed, or signal failed)
+  4  --stop did not stop anything (declined, ambiguous, unknown owner, changed,
+     or signal failed)
 130  interrupted
 `
 
@@ -259,9 +260,13 @@ func describeError(q inspect.Query, err error) (string, []string) {
 
 	switch ie.Kind {
 	case inspect.KindToolMissing:
+		install := "Install it and make sure it is on your PATH."
+		if ie.Op == "ss" {
+			install = "Install it (part of the iproute2 package) and make sure it is on your PATH."
+		}
 		return string(ie.Kind), []string{
 			fmt.Sprintf("required tool %q is not installed, so port %d cannot be inspected.", ie.Op, q.Port),
-			"Install it and make sure it is on your PATH.",
+			install,
 		}
 	case inspect.KindPermissionDenied:
 		return string(ie.Kind), []string{

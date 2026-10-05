@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 )
 
 // Protocol is a transport protocol a socket uses.
@@ -75,7 +76,7 @@ type Socket struct {
 	// Address is the bound local address as the OS reports it, without the
 	// port or brackets: "127.0.0.1", "*", "::1", "0.0.0.0", "fe80::1%lo0".
 	// Wildcards appear as "*", "0.0.0.0" or "::"; link-local addresses carry
-	// their zone.
+	// their zone, and a wildcard bound to one device appears as "*%eth0".
 	Address string
 	Port    int
 	// State is StateListen for a TCP listener, or StateBound for a UDP
@@ -92,6 +93,11 @@ func (s Socket) Exposure() Exposure {
 func classify(addr string) Exposure {
 	if addr == "*" {
 		return ExposureAllInterfaces
+	}
+	// A wildcard with a zone is bound to one device (Linux SO_BINDTODEVICE),
+	// so it accepts connections on that interface only.
+	if zone, ok := strings.CutPrefix(addr, "*%"); ok && zone != "" {
+		return ExposureInterface
 	}
 	ip, err := netip.ParseAddr(addr)
 	if err != nil {

@@ -1,0 +1,2 @@
+tcp LISTEN 0      4096   0.0.0.0:48124 0.0.0.0:* users:(("sockets",pid=1005,fd=10))
+tcp LISTEN 0      4096      [::]:48124    [::]:* users:(("sockets",pid=1005,fd=9)) 

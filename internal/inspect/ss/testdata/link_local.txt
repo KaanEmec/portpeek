@@ -1,0 +1,4 @@
+udp UNCONN 0      0      [fe80::1234]%eth0:48127 [::]:* users:(("sockets",pid=945,fd=14))
+udp UNCONN 0      0        [fe80::1234]%lo:48127 [::]:* users:(("sockets",pid=945,fd=12))
+tcp LISTEN 0      4096   [fe80::1234]%eth0:48127 [::]:* users:(("sockets",pid=945,fd=13))
+tcp LISTEN 0      4096     [fe80::1234]%lo:48127 [::]:* users:(("sockets",pid=945,fd=11))

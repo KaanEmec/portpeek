@@ -19,8 +19,13 @@ import (
 // "not visible".
 var privileged = os.Geteuid() == 0
 
-// hiddenSocketsHint is printed after every unprivileged text result.
-const hiddenSocketsHint = "Sockets owned by other users are not visible without elevated privileges (try sudo).\n"
+// Completeness hints end a text result that may be missing information.
+// unknownOwnerHint wins over hiddenSocketsHint when both apply, because it
+// names the gap the user can actually see in the output.
+const (
+	hiddenSocketsHint = "Sockets owned by other users are not visible without elevated privileges (try sudo).\n"
+	unknownOwnerHint  = "Owner details for some sockets are not readable without elevated privileges (try sudo).\n"
+)
 
 // labelWidth aligns field values: the longest label is "Working dir:".
 const labelWidth = 14
@@ -32,20 +37,50 @@ func render(w io.Writer, q inspect.Query, owners []inspect.Owner, asJSON bool) e
 	}
 
 	var text string
+	hint := completenessHint(owners)
 	switch {
 	case len(owners) == 0:
 		text = fmt.Sprintf("No listening or bound socket on port %d (%s).\n", q.Port, protocolPhrase(q))
-		if !privileged {
-			text += hiddenSocketsHint
-		}
+		text += hint
 	default:
 		text = renderText(q, owners)
-		if !privileged {
-			text += "\n" + hiddenSocketsHint
+		if hint != "" {
+			text += "\n" + hint
 		}
 	}
 	_, err := io.WriteString(w, text)
 	return err
+}
+
+// isUnknownOwner reports whether an adapter listed a socket but could not
+// attribute it to a process, which it signals with PID 0. Such an owner has
+// no PID to show or signal.
+func isUnknownOwner(p inspect.Process) bool {
+	return p.PID == 0
+}
+
+func hasUnknownOwner(owners []inspect.Owner) bool {
+	return slices.ContainsFunc(owners, func(o inspect.Owner) bool { return isUnknownOwner(o.Process) })
+}
+
+// complete reports whether the result is known to show every socket on the
+// port together with its owner: the process must be privileged, and no
+// listed socket may have an unknown owner.
+func complete(owners []inspect.Owner) bool {
+	return privileged && !hasUnknownOwner(owners)
+}
+
+// completenessHint returns the line that ends a possibly incomplete text
+// result, or "" when the result is complete.
+func completenessHint(owners []inspect.Owner) string {
+	switch {
+	case hasUnknownOwner(owners):
+		return unknownOwnerHint
+	case !privileged:
+		return hiddenSocketsHint
+	default:
+		return ""
+	}
 }
 
 // protocolPhrase describes the protocols a query covered.
@@ -83,6 +118,10 @@ func writeOwner(b *strings.Builder, q inspect.Query, owner inspect.Owner) {
 		headlineProcess(p),
 	)
 
+	unknown := isUnknownOwner(p)
+	if unknown {
+		writeField(b, "Owner", processField(p, inspect.FieldName, ""))
+	}
 	mixed := len(protos) > 1
 	for _, s := range owner.Sockets {
 		writeField(b, "Address", socketDescription(s, mixed))
@@ -91,7 +130,11 @@ func writeOwner(b *strings.Builder, q inspect.Query, owner inspect.Owner) {
 	writeField(b, "User", processField(p, inspect.FieldUser, p.User))
 	writeField(b, "Command", processField(p, inspect.FieldCommand, p.Command))
 	writeField(b, "Working dir", processField(p, inspect.FieldWorkingDir, p.WorkingDir))
-	writeField(b, "Stop", "kill "+strconv.Itoa(p.PID))
+	// An unknown owner has no PID, and "kill 0" would signal the user's own
+	// process group, so no stop hint is printed for it.
+	if !unknown {
+		writeField(b, "Stop", "kill "+strconv.Itoa(p.PID))
+	}
 }
 
 // writeField writes one labelled line. An empty label continues the previous
@@ -104,12 +147,16 @@ func writeField(b *strings.Builder, label, value string) {
 }
 
 // headlineProcess names the process, falling back to the PID when the name is
-// unavailable.
+// unavailable and to "an unknown process" when the owner is unknown.
 func headlineProcess(p inspect.Process) string {
-	if p.Name == "" {
+	switch {
+	case isUnknownOwner(p):
+		return "an unknown process"
+	case p.Name == "":
 		return fmt.Sprintf("PID %d", p.PID)
+	default:
+		return fmt.Sprintf("%s (PID %d)", p.Name, p.PID)
 	}
-	return fmt.Sprintf("%s (PID %d)", p.Name, p.PID)
 }
 
 // protocols returns the distinct protocols of sockets in first-seen order.
@@ -229,7 +276,7 @@ type jsonOutput struct {
 	Schema int       `json:"schema"`
 	Query  jsonQuery `json:"query"`
 	// Complete is false when other users' sockets may be hidden because the
-	// process is not privileged.
+	// process is not privileged, or when some socket's owner is unknown.
 	Complete bool        `json:"complete"`
 	Owners   []jsonOwner `json:"owners"`
 }
@@ -245,6 +292,7 @@ type jsonOwner struct {
 }
 
 type jsonProcess struct {
+	// PID is 0 when the owner is unknown.
 	PID         int               `json:"pid"`
 	Name        string            `json:"name"`
 	User        string            `json:"user"`
@@ -278,7 +326,7 @@ func writeJSON(w io.Writer, q inspect.Query, owners []inspect.Owner) error {
 	out := jsonOutput{
 		Schema:   jsonSchemaVersion,
 		Query:    jsonQuery{Port: q.Port, Protocol: string(q.Protocol)},
-		Complete: privileged,
+		Complete: complete(owners),
 		Owners:   make([]jsonOwner, 0, len(owners)),
 	}
 	for _, o := range owners {

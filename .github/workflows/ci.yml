@@ -12,7 +12,7 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +20,11 @@ jobs:
         with:
           go-version-file: go.mod
       - name: gofmt
+        if: runner.os != 'Windows'
         run: test -z "$(gofmt -l .)"
+      - name: Install ss
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y -qq iproute2
       - run: go vet ./...
       - run: go test -race ./...
       - name: Cross-compile
