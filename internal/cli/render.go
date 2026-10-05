@@ -15,28 +15,37 @@ import (
 
 // privileged reports whether the process can see every user's sockets. On
 // macOS, lsof silently omits other users' sockets unless run as root, so an
-// unprivileged "no match" may simply mean "not visible".
+// unprivileged result may be incomplete and a "no match" may simply mean
+// "not visible".
 var privileged = os.Geteuid() == 0
+
+// hiddenSocketsHint is printed after every unprivileged text result.
+const hiddenSocketsHint = "Sockets owned by other users are not visible without elevated privileges (try sudo).\n"
 
 // labelWidth aligns field values: the longest label is "Working dir:".
 const labelWidth = 14
 
 // render writes the result as JSON or text, including the no-match case.
 func render(w io.Writer, q inspect.Query, owners []inspect.Owner, asJSON bool) error {
-	switch {
-	case asJSON:
+	if asJSON {
 		return writeJSON(w, q, owners)
-	case len(owners) == 0:
-		msg := fmt.Sprintf("No process is using port %d (%s).\n", q.Port, protocolPhrase(q))
-		if !privileged {
-			msg += "Sockets owned by other users are not visible without elevated privileges (try sudo).\n"
-		}
-		_, err := io.WriteString(w, msg)
-		return err
-	default:
-		_, err := io.WriteString(w, renderText(q, owners))
-		return err
 	}
+
+	var text string
+	switch {
+	case len(owners) == 0:
+		text = fmt.Sprintf("No listening or bound socket on port %d (%s).\n", q.Port, protocolPhrase(q))
+		if !privileged {
+			text += hiddenSocketsHint
+		}
+	default:
+		text = renderText(q, owners)
+		if !privileged {
+			text += "\n" + hiddenSocketsHint
+		}
+	}
+	_, err := io.WriteString(w, text)
+	return err
 }
 
 // protocolPhrase describes the protocols a query covered.
@@ -65,9 +74,16 @@ func renderText(q inspect.Query, owners []inspect.Owner) string {
 func writeOwner(b *strings.Builder, q inspect.Query, owner inspect.Owner) {
 	p := owner.Process
 
-	fmt.Fprintf(b, "Port %d%s is used by %s\n", q.Port, protocolSuffix(q, owner), headlineProcess(p))
+	protos := protocols(owner.Sockets)
+	fmt.Fprintf(
+		b,
+		"Port %d/%s is used by %s\n",
+		q.Port,
+		strings.Join(protos, "+"),
+		headlineProcess(p),
+	)
 
-	mixed := len(protocols(owner.Sockets)) > 1
+	mixed := len(protos) > 1
 	for _, s := range owner.Sockets {
 		writeField(b, "Address", socketDescription(s, mixed))
 	}
@@ -75,9 +91,7 @@ func writeOwner(b *strings.Builder, q inspect.Query, owner inspect.Owner) {
 	writeField(b, "User", processField(p, inspect.FieldUser, p.User))
 	writeField(b, "Command", processField(p, inspect.FieldCommand, p.Command))
 	writeField(b, "Working dir", processField(p, inspect.FieldWorkingDir, p.WorkingDir))
-	if p.PID > 0 {
-		writeField(b, "Stop", "kill "+strconv.Itoa(p.PID))
-	}
+	writeField(b, "Stop", "kill "+strconv.Itoa(p.PID))
 }
 
 // writeField writes one labelled line. An empty label continues the previous
@@ -98,19 +112,6 @@ func headlineProcess(p inspect.Process) string {
 	return fmt.Sprintf("%s (PID %d)", p.Name, p.PID)
 }
 
-// protocolSuffix returns "/tcp", "/udp", "/tcp+udp", or the query protocol
-// when the owner has no sockets.
-func protocolSuffix(q inspect.Query, owner inspect.Owner) string {
-	names := protocols(owner.Sockets)
-	if len(names) == 0 && q.Protocol != "" {
-		names = []string{string(q.Protocol)}
-	}
-	if len(names) == 0 {
-		return ""
-	}
-	return "/" + strings.Join(names, "+")
-}
-
 // protocols returns the distinct protocols of sockets in first-seen order.
 func protocols(sockets []inspect.Socket) []string {
 	names := []string{}
@@ -125,23 +126,33 @@ func protocols(sockets []inspect.Socket) []string {
 
 // socketAddress formats the bound address and port, bracketing IPv6.
 func socketAddress(s inspect.Socket) string {
-	host := strings.Trim(s.Address, "[]")
-	return net.JoinHostPort(host, strconv.Itoa(s.Port))
+	return net.JoinHostPort(s.Address, strconv.Itoa(s.Port))
 }
 
 // socketDescription renders "127.0.0.1:3000 (IPv4, LISTEN)". The protocol is
 // added only when the owner holds sockets of more than one protocol.
 func socketDescription(s inspect.Socket, withProtocol bool) string {
-	state := s.State
-	if state == "" {
-		state = "bound"
-	}
 	parts := []string{}
 	if withProtocol {
 		parts = append(parts, string(s.Protocol))
 	}
-	parts = append(parts, familyLabel(s.Family), state)
+	parts = append(parts, familyLabel(s.Family), stateLabel(s))
 	return fmt.Sprintf("%s (%s)", socketAddress(s), strings.Join(parts, ", "))
+}
+
+// stateLabel describes how the socket holds its port. A bound TCP socket is
+// called out because it holds the port without accepting connections.
+func stateLabel(s inspect.Socket) string {
+	switch {
+	case s.State == inspect.StateListen:
+		return "LISTEN"
+	case s.State == inspect.StateBound && s.Protocol == inspect.TCP:
+		return "bound, not listening"
+	case s.State == inspect.StateBound:
+		return "bound"
+	default:
+		return s.State
+	}
 }
 
 func familyLabel(f inspect.Family) string {
@@ -159,13 +170,13 @@ func familyLabel(f inspect.Family) string {
 func exposureText(s inspect.Socket) string {
 	switch s.Exposure() {
 	case inspect.ExposureLoopback:
-		return "loopback only — reachable from this machine only"
+		return "loopback only — accepts connections from this machine only"
 	case inspect.ExposureAllInterfaces:
-		return "all interfaces — reachable from other machines on the network"
+		return "all interfaces — accepts connections on every network interface (firewall not checked)"
 	case inspect.ExposureInterface:
 		return fmt.Sprintf(
-			"specific interface %s — reachable by hosts that can route to it",
-			strings.Trim(s.Address, "[]"),
+			"specific interface %s — accepts connections on that address only (firewall not checked)",
+			s.Address,
 		)
 	default:
 		return "unknown"
@@ -215,9 +226,12 @@ func processField(p inspect.Process, f inspect.Field, value string) string {
 const jsonSchemaVersion = 1
 
 type jsonOutput struct {
-	Schema int         `json:"schema"`
-	Query  jsonQuery   `json:"query"`
-	Owners []jsonOwner `json:"owners"`
+	Schema int       `json:"schema"`
+	Query  jsonQuery `json:"query"`
+	// Complete is false when other users' sockets may be hidden because the
+	// process is not privileged.
+	Complete bool        `json:"complete"`
+	Owners   []jsonOwner `json:"owners"`
 }
 
 type jsonQuery struct {
@@ -262,9 +276,10 @@ type jsonError struct {
 // unavailable maps are never null.
 func writeJSON(w io.Writer, q inspect.Query, owners []inspect.Owner) error {
 	out := jsonOutput{
-		Schema: jsonSchemaVersion,
-		Query:  jsonQuery{Port: q.Port, Protocol: string(q.Protocol)},
-		Owners: make([]jsonOwner, 0, len(owners)),
+		Schema:   jsonSchemaVersion,
+		Query:    jsonQuery{Port: q.Port, Protocol: string(q.Protocol)},
+		Complete: privileged,
+		Owners:   make([]jsonOwner, 0, len(owners)),
 	}
 	for _, o := range owners {
 		out.Owners = append(out.Owners, toJSONOwner(o))

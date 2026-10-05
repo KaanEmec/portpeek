@@ -13,17 +13,15 @@ import (
 )
 
 // TestInspector_Inspect_Live runs the real lsof and ps against sockets this
-// test process opens. Run with: go test -run Live ./internal/inspect/lsof
+// test process opens. It is skipped with -short. Run it alone with:
+// go test -run Live ./internal/inspect/lsof
 func TestInspector_Inspect_Live(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live lsof test skipped in -short mode")
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen tcp: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
+	ln4 := listenTCP(t, "tcp4", "127.0.0.1:0")
+	ln6 := listenTCP(t, "tcp6", "[::1]:0")
 
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -31,33 +29,62 @@ func TestInspector_Inspect_Live(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pc.Close() })
 
+	// A client connection to the IPv4 listener. Its ephemeral port appears
+	// only as the local end of the client socket and the remote end of the
+	// accepted socket, so it has no owner.
+	client, err := net.Dial("tcp4", ln4.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	accepted, err := ln4.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	t.Cleanup(func() { _ = accepted.Close() })
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 
+	port4 := ln4.Addr().(*net.TCPAddr).Port
+	port6 := ln6.Addr().(*net.TCPAddr).Port
+	portUDP := pc.LocalAddr().(*net.UDPAddr).Port
 	tests := []struct {
 		name  string
 		query inspect.Query
 		want  inspect.Socket
 	}{
 		{
-			name:  "tcp listener",
-			query: inspect.Query{Port: ln.Addr().(*net.TCPAddr).Port},
+			name:  "ipv4 tcp listener",
+			query: inspect.Query{Port: port4},
 			want: inspect.Socket{
 				Protocol: inspect.TCP,
 				Family:   inspect.IPv4,
 				Address:  "127.0.0.1",
-				Port:     ln.Addr().(*net.TCPAddr).Port,
-				State:    "LISTEN",
+				Port:     port4,
+				State:    inspect.StateListen,
+			},
+		},
+		{
+			name:  "ipv6 tcp listener",
+			query: inspect.Query{Port: port6, Protocol: inspect.TCP},
+			want: inspect.Socket{
+				Protocol: inspect.TCP,
+				Family:   inspect.IPv6,
+				Address:  "::1",
+				Port:     port6,
+				State:    inspect.StateListen,
 			},
 		},
 		{
 			name:  "udp bound socket",
-			query: inspect.Query{Port: pc.LocalAddr().(*net.UDPAddr).Port, Protocol: inspect.UDP},
+			query: inspect.Query{Port: portUDP, Protocol: inspect.UDP},
 			want: inspect.Socket{
 				Protocol: inspect.UDP,
 				Family:   inspect.IPv4,
 				Address:  "127.0.0.1",
-				Port:     pc.LocalAddr().(*net.UDPAddr).Port,
+				Port:     portUDP,
+				State:    inspect.StateBound,
 			},
 		},
 	}
@@ -91,4 +118,25 @@ func TestInspector_Inspect_Live(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("client ephemeral port has no owner", func(t *testing.T) {
+		q := inspect.Query{Port: client.LocalAddr().(*net.TCPAddr).Port, Protocol: inspect.TCP}
+		res, err := New().Inspect(ctx, q)
+		if err != nil {
+			t.Fatalf("Inspect(%+v): %v", q, err)
+		}
+		if len(res.Owners) != 0 {
+			t.Errorf("Owners = %+v, want none", res.Owners)
+		}
+	})
+}
+
+func listenTCP(t *testing.T, network, addr string) net.Listener {
+	t.Helper()
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		t.Fatalf("listen %s %s: %v", network, addr, err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln
 }

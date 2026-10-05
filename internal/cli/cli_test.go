@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -25,24 +25,34 @@ func (f *fakeInspector) Inspect(_ context.Context, q inspect.Query) (inspect.Res
 	return f.result, f.err
 }
 
+// setPrivileged overrides privileged for the rest of the test. Callers must
+// not run in parallel with other tests.
+func setPrivileged(t *testing.T, v bool) {
+	t.Helper()
+	old := privileged
+	privileged = v
+	t.Cleanup(func() { privileged = old })
+}
+
 func nodeOwner() inspect.Owner {
 	return inspect.Owner{
 		Process: inspect.Process{
-			PID:        48213,
-			Name:       "node",
-			User:       "kaanemec",
-			Command:    "node server.js",
-			WorkingDir: "/Users/kaanemec/app",
+			PID:         48213,
+			Name:        "node",
+			User:        "kaanemec",
+			Command:     "node server.js",
+			WorkingDir:  "/Users/kaanemec/app",
+			Unavailable: map[inspect.Field]string{},
 		},
 		Sockets: []inspect.Socket{
-			{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: "LISTEN"},
+			{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: inspect.StateListen},
 		},
 	}
 }
 
 const nodeText = `Port 3000/tcp is used by node (PID 48213)
   Address:      127.0.0.1:3000 (IPv4, LISTEN)
-  Exposure:     loopback only — reachable from this machine only
+  Exposure:     loopback only — accepts connections from this machine only
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
@@ -55,6 +65,7 @@ const nodeJSON = `{
     "port": 3000,
     "protocol": ""
   },
+  "complete": true,
   "owners": [
     {
       "process": {
@@ -81,8 +92,7 @@ const nodeJSON = `{
 `
 
 func TestRun(t *testing.T) {
-	privileged = true
-	t.Cleanup(func() { privileged = false })
+	setPrivileged(t, true)
 	twoOwners := []inspect.Owner{
 		nodeOwner(),
 		{
@@ -94,30 +104,30 @@ func TestRun(t *testing.T) {
 				WorkingDir: "/srv",
 			},
 			Sockets: []inspect.Socket{
-				{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "*", Port: 3000, State: "LISTEN"},
+				{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "*", Port: 3000, State: inspect.StateListen},
 			},
 		},
 	}
 
 	mixed := nodeOwner()
 	mixed.Sockets = []inspect.Socket{
-		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: "LISTEN"},
-		{Protocol: inspect.UDP, Family: inspect.IPv4, Address: "192.168.1.5", Port: 3000},
-		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "::1", Port: 3000, State: "LISTEN"},
+		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: inspect.StateListen},
+		{Protocol: inspect.UDP, Family: inspect.IPv4, Address: "192.168.1.5", Port: 3000, State: inspect.StateBound},
+		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "::1", Port: 3000, State: inspect.StateListen},
 	}
 
 	sameExposure := nodeOwner()
 	sameExposure.Sockets = []inspect.Socket{
-		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "0.0.0.0", Port: 3000, State: "LISTEN"},
-		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "*", Port: 3000, State: "LISTEN"},
+		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "0.0.0.0", Port: 3000, State: inspect.StateListen},
+		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "*", Port: 3000, State: inspect.StateListen},
 	}
 
 	udpOnly := nodeOwner()
 	udpOnly.Sockets = []inspect.Socket{
-		{Protocol: inspect.UDP, Family: inspect.IPv4, Address: "*", Port: 5353},
+		{Protocol: inspect.UDP, Family: inspect.IPv4, Address: "*", Port: 5353, State: inspect.StateBound},
 	}
 
-	restricted := inspect.Process{PID: 77}
+	restricted := inspect.Process{PID: 77, Unavailable: map[inspect.Field]string{}}
 	restricted.MarkUnavailable(inspect.FieldName, "permission denied")
 	restricted.MarkUnavailable(inspect.FieldUser, "process exited")
 	restricted.MarkUnavailable(inspect.FieldCommand, "permission denied")
@@ -125,8 +135,14 @@ func TestRun(t *testing.T) {
 	unavailable := inspect.Owner{
 		Process: restricted,
 		Sockets: []inspect.Socket{
-			{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "*", Port: 3000, State: "LISTEN"},
+			{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "*", Port: 3000, State: inspect.StateListen},
 		},
+	}
+
+	boundTCP := nodeOwner()
+	boundTCP.Sockets = []inspect.Socket{
+		{Protocol: inspect.TCP, Family: inspect.IPv4, Address: "127.0.0.1", Port: 3000, State: inspect.StateBound},
+		{Protocol: inspect.TCP, Family: inspect.IPv6, Address: "fe80::1%lo0", Port: 3000, State: inspect.StateBound},
 	}
 
 	unavailableJSON := nodeOwner()
@@ -167,7 +183,7 @@ func TestRun(t *testing.T) {
 			wantQuery: &inspect.Query{Port: 5353, Protocol: inspect.UDP},
 			wantOut: `Port 5353/udp is used by node (PID 48213)
   Address:      *:5353 (IPv4, bound)
-  Exposure:     all interfaces — reachable from other machines on the network
+  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
@@ -183,7 +199,7 @@ func TestRun(t *testing.T) {
 
 Port 3000/tcp is used by node (PID 48213)
   Address:      127.0.0.1:3000 (IPv4, LISTEN)
-  Exposure:     loopback only — reachable from this machine only
+  Exposure:     loopback only — accepts connections from this machine only
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
@@ -191,7 +207,7 @@ Port 3000/tcp is used by node (PID 48213)
 
 Port 3000/tcp is used by python3 (PID 500)
   Address:      *:3000 (IPv6, LISTEN)
-  Exposure:     all interfaces — reachable from other machines on the network
+  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
   User:         root
   Command:      python3 -m http.server 3000
   Working dir:  /srv
@@ -207,9 +223,9 @@ Port 3000/tcp is used by python3 (PID 500)
   Address:      127.0.0.1:3000 (tcp, IPv4, LISTEN)
   Address:      192.168.1.5:3000 (udp, IPv4, bound)
   Address:      [::1]:3000 (tcp, IPv6, LISTEN)
-  Exposure:     127.0.0.1:3000: loopback only — reachable from this machine only
-                192.168.1.5:3000: specific interface 192.168.1.5 — reachable by hosts that can route to it
-                [::1]:3000: loopback only — reachable from this machine only
+  Exposure:     127.0.0.1:3000: loopback only — accepts connections from this machine only
+                192.168.1.5:3000: specific interface 192.168.1.5 — accepts connections on that address only (firewall not checked)
+                [::1]:3000: loopback only — accepts connections from this machine only
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
@@ -224,7 +240,7 @@ Port 3000/tcp is used by python3 (PID 500)
 			wantOut: `Port 3000/tcp is used by node (PID 48213)
   Address:      0.0.0.0:3000 (IPv4, LISTEN)
   Address:      *:3000 (IPv6, LISTEN)
-  Exposure:     all interfaces — reachable from other machines on the network
+  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
@@ -238,7 +254,7 @@ Port 3000/tcp is used by python3 (PID 500)
 			wantCode: 0,
 			wantOut: `Port 3000/tcp is used by PID 77
   Address:      *:3000 (IPv4, LISTEN)
-  Exposure:     all interfaces — reachable from other machines on the network
+  Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
   User:         unavailable (process exited)
   Command:      unavailable (permission denied)
   Working dir:  unavailable (permission denied)
@@ -249,13 +265,13 @@ Port 3000/tcp is used by python3 (PID 500)
 			name:     "no match",
 			args:     []string{"3000"},
 			wantCode: 1,
-			wantOut:  "No process is using port 3000 (tcp or udp).\n",
+			wantOut:  "No listening or bound socket on port 3000 (tcp or udp).\n",
 		},
 		{
 			name:     "no match with protocol",
 			args:     []string{"--udp", "53"},
 			wantCode: 1,
-			wantOut:  "No process is using port 53 (udp).\n",
+			wantOut:  "No listening or bound socket on port 53 (udp).\n",
 		},
 		{
 			name:     "json match",
@@ -292,6 +308,7 @@ Port 3000/tcp is used by python3 (PID 500)
     "port": 3000,
     "protocol": ""
   },
+  "complete": true,
   "owners": []
 }
 `,
@@ -309,6 +326,36 @@ Port 3000/tcp is used by python3 (PID 500)
   }
 }
 `,
+		},
+		{
+			name:     "tcp bound without listening",
+			args:     []string{"3000"},
+			owners:   []inspect.Owner{boundTCP},
+			wantCode: 0,
+			wantOut: `Port 3000/tcp is used by node (PID 48213)
+  Address:      127.0.0.1:3000 (IPv4, bound, not listening)
+  Address:      [fe80::1%lo0]:3000 (IPv6, bound, not listening)
+  Exposure:     127.0.0.1:3000: loopback only — accepts connections from this machine only
+                [fe80::1%lo0]:3000: specific interface fe80::1%lo0 — accepts connections on that address only (firewall not checked)
+  User:         kaanemec
+  Command:      node server.js
+  Working dir:  /Users/kaanemec/app
+  Stop:         kill 48213
+`,
+		},
+		{
+			name:       "interrupted",
+			args:       []string{"3000"},
+			inspectErr: context.Canceled,
+			wantCode:   130,
+			wantErr:    "portpeek: interrupted\n",
+		},
+		{
+			name:       "interrupted with json",
+			args:       []string{"3000", "--json"},
+			inspectErr: fmt.Errorf("running lsof: %w", context.Canceled),
+			wantCode:   130,
+			wantErr:    "portpeek: interrupted\n",
 		},
 		{
 			name:     "help flag",
@@ -496,15 +543,68 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
-func TestNoMatchHintUnprivileged(t *testing.T) {
-	privileged = false
-	var out bytes.Buffer
-	code := Run(context.Background(), []string{"3000"}, &out, io.Discard, &fakeInspector{})
-	if code != exitNoMatch {
-		t.Fatalf("exit = %d, want %d", code, exitNoMatch)
+func TestRun_Unprivileged(t *testing.T) {
+	setPrivileged(t, false)
+
+	tests := []struct {
+		name     string
+		args     []string
+		owners   []inspect.Owner
+		wantCode int
+		wantOut  string
+	}{
+		{
+			name:     "no match text",
+			args:     []string{"3000"},
+			wantCode: exitNoMatch,
+			wantOut:  "No listening or bound socket on port 3000 (tcp or udp).\n" + hiddenSocketsHint,
+		},
+		{
+			name:     "match text",
+			args:     []string{"3000"},
+			owners:   []inspect.Owner{nodeOwner()},
+			wantCode: exitOK,
+			wantOut:  nodeText + "\n" + hiddenSocketsHint,
+		},
+		{
+			name:     "match json",
+			args:     []string{"3000", "--json"},
+			owners:   []inspect.Owner{nodeOwner()},
+			wantCode: exitOK,
+			wantOut:  strings.Replace(nodeJSON, `"complete": true`, `"complete": false`, 1),
+		},
+		{
+			name:     "no match json",
+			args:     []string{"3000", "--json"},
+			wantCode: exitNoMatch,
+			wantOut: `{
+  "schema": 1,
+  "query": {
+    "port": 3000,
+    "protocol": ""
+  },
+  "complete": false,
+  "owners": []
+}
+`,
+		},
 	}
-	want := "No process is using port 3000 (tcp or udp).\nSockets owned by other users are not visible without elevated privileges (try sudo).\n"
-	if out.String() != want {
-		t.Errorf("output:\n%s\nwant:\n%s", out.String(), want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeInspector{result: inspect.Result{Owners: tt.owners}}
+			var stdout, stderr bytes.Buffer
+
+			code := Run(t.Context(), tt.args, &stdout, &stderr, fake)
+
+			if code != tt.wantCode {
+				t.Errorf("exit code = %d, want %d", code, tt.wantCode)
+			}
+			if got := stdout.String(); got != tt.wantOut {
+				t.Errorf("stdout mismatch\n got:\n%s\nwant:\n%s", got, tt.wantOut)
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("stderr = %q, want empty", stderr.String())
+			}
+		})
 	}
 }

@@ -31,17 +31,21 @@ func (f fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte,
 	return []byte(r.stdout), []byte(r.stderr), r.code, r.err
 }
 
-func findKey(selector string) string { return "lsof -nP -F pcnLTtfPR0 -i " + selector }
-func psKey(pid string) string        { return "ps -o command= -p " + pid }
-func cwdKey(pid string) string       { return "lsof -nP -F n -d cwd -a -p " + pid }
+func findKey(selector string) string { return "lsof -nP -F pcnLTtfP0 -i " + selector }
+
+// Enrichment commands for PID 47885, the process in the recorded fixtures.
+const (
+	psKey  = "ps -o command= -p 47885"
+	cwdKey = "lsof -nP -F n -d cwd -a -p 47885"
+)
 
 func TestInspector_Inspect(t *testing.T) {
 	t.Parallel()
 
 	runner := fakeRunner{
 		findKey(":48123"): {stdout: string(readFixture(t, "established_mixed.txt"))},
-		psKey("42148"):    {stdout: "python3 -m http.server 48123\n"},
-		cwdKey("42148"):   {stdout: "p42148\nfcwd\nn/Users/me/site\n"},
+		psKey:             {stdout: "python3 -m http.server 48123\n"},
+		cwdKey:            {stdout: "p47885\nfcwd\nn/Users/me/site\n"},
 	}
 	got, err := NewWithRunner(runner).Inspect(context.Background(), inspect.Query{Port: 48123})
 	if err != nil {
@@ -51,7 +55,7 @@ func TestInspector_Inspect(t *testing.T) {
 		t.Fatalf("Inspect owners = %+v, want 1", got.Owners)
 	}
 	p := got.Owners[0].Process
-	if p.PID != 42148 || p.Name != "Python" || p.User != "kaanemec" {
+	if p.PID != 47885 || p.Name != "Python" || p.User != "kaanemec" {
 		t.Errorf("process identity = %+v", p)
 	}
 	if p.Command != "python3 -m http.server 48123" {
@@ -104,7 +108,16 @@ func TestInspector_Inspect_NoMatch(t *testing.T) {
 		{
 			name: "only remote port matched",
 			resp: response{stdout: string(readFixture(t, "remote_port_only.txt"))},
-			port: 443,
+			port: 48127,
+		},
+		{
+			name: "exit 1 with only warnings on stderr",
+			resp: response{
+				code: 1,
+				stderr: "lsof: WARNING: can't stat() nfs file system /Volumes/share\n" +
+					"      Output information may be incomplete.\n",
+			},
+			port: 48123,
 		},
 	}
 	for _, tt := range tests {
@@ -153,6 +166,15 @@ func TestInspector_Inspect_Errors(t *testing.T) {
 			wantText: "unsupported option",
 		},
 		{
+			name: "exit 1 with a warning and an error",
+			resp: response{
+				code:   1,
+				stderr: "lsof: WARNING: can't stat() nfs file system /Volumes/share\nlsof: unsupported option\n",
+			},
+			wantKind: inspect.KindCommandFailed,
+			wantText: "unsupported option",
+		},
+		{
 			name:     "other exit code",
 			resp:     response{code: 2},
 			wantKind: inspect.KindCommandFailed,
@@ -178,8 +200,9 @@ func TestInspector_Inspect_Errors(t *testing.T) {
 			if err == nil {
 				t.Fatal("Inspect: expected error")
 			}
-			if got := inspect.KindOf(err); got != tt.wantKind {
-				t.Errorf("KindOf(%v) = %q, want %q", err, got, tt.wantKind)
+			var ie *inspect.Error
+			if !errors.As(err, &ie) || ie.Kind != tt.wantKind {
+				t.Errorf("Inspect error = %#v, want *inspect.Error of kind %q", err, tt.wantKind)
 			}
 			if !strings.Contains(err.Error(), tt.wantText) {
 				t.Errorf("error %q does not contain %q", err, tt.wantText)
@@ -242,7 +265,7 @@ func TestInspector_Inspect_EnrichmentFailures(t *testing.T) {
 		{
 			name:        "cwd output without a cwd record",
 			ps:          response{stdout: "python3 server.py\n"},
-			cwd:         response{stdout: "p42148\n"},
+			cwd:         response{stdout: "p47885\n"},
 			wantCommand: "python3 server.py",
 			wantReasons: map[inspect.Field]string{inspect.FieldWorkingDir: reasonUnknown},
 		},
@@ -258,8 +281,8 @@ func TestInspector_Inspect_EnrichmentFailures(t *testing.T) {
 			t.Parallel()
 			runner := fakeRunner{
 				findKey(":48123"): {stdout: find},
-				psKey("42148"):    tt.ps,
-				cwdKey("42148"):   tt.cwd,
+				psKey:             tt.ps,
+				cwdKey:            tt.cwd,
 			}
 			got, err := NewWithRunner(runner).Inspect(context.Background(), inspect.Query{Port: 48123})
 			if err != nil {
@@ -280,6 +303,76 @@ func TestInspector_Inspect_EnrichmentFailures(t *testing.T) {
 				if p.Unavailable[f] != want {
 					t.Errorf("Unavailable[%q] = %q, want %q", f, p.Unavailable[f], want)
 				}
+			}
+		})
+	}
+}
+
+// cancellingRunner answers from a fakeRunner and cancels the context when
+// it runs the command whose key is cancelOn, so the command itself succeeds
+// but the inspection was interrupted.
+type cancellingRunner struct {
+	fakeRunner
+	cancelOn string
+	cancel   context.CancelFunc
+	ran      []string
+}
+
+func (c *cancellingRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, int, error) {
+	key := strings.Join(append([]string{name}, args...), " ")
+	c.ran = append(c.ran, key)
+	if key == c.cancelOn {
+		c.cancel()
+	}
+	return c.fakeRunner.Run(ctx, name, args...)
+}
+
+func TestInspector_Inspect_Cancelled(t *testing.T) {
+	t.Parallel()
+
+	find := string(readFixture(t, "tcp4_listener.txt"))
+	tests := []struct {
+		name     string
+		cancelOn string
+		wantRan  []string
+	}{
+		{
+			name:     "before enrichment",
+			cancelOn: findKey(":48123"),
+			wantRan:  []string{findKey(":48123")},
+		},
+		{
+			name:     "during enrichment",
+			cancelOn: psKey,
+			wantRan:  []string{findKey(":48123"), cwdKey, psKey},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			runner := &cancellingRunner{
+				fakeRunner: fakeRunner{
+					findKey(":48123"): {stdout: find},
+					psKey:             {stdout: "python3 server.py\n"},
+					cwdKey:            {stdout: "p47885\nfcwd\nn/tmp\n"},
+				},
+				cancelOn: tt.cancelOn,
+				cancel:   cancel,
+			}
+
+			got, err := NewWithRunner(runner).Inspect(ctx, inspect.Query{Port: 48123})
+
+			var ie *inspect.Error
+			if !errors.Is(err, context.Canceled) || errors.As(err, &ie) {
+				t.Errorf("Inspect error = %#v, want plain context.Canceled", err)
+			}
+			if len(got.Owners) != 0 {
+				t.Errorf("Owners = %+v, want none on cancellation", got.Owners)
+			}
+			if strings.Join(runner.ran, "\n") != strings.Join(tt.wantRan, "\n") {
+				t.Errorf("commands run = %q, want %q", runner.ran, tt.wantRan)
 			}
 		})
 	}

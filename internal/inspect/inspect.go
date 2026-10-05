@@ -5,10 +5,8 @@ package inspect
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
-	"strings"
 )
 
 // Protocol is a transport protocol a socket uses.
@@ -25,6 +23,13 @@ type Family string
 const (
 	IPv4 Family = "ipv4"
 	IPv6 Family = "ipv6"
+)
+
+// Socket states. A socket owns its port when it is a TCP listener or when it
+// is bound to the port with no peer (UDP, or TCP bound without listen).
+const (
+	StateListen = "LISTEN"
+	StateBound  = "BOUND"
 )
 
 // Exposure classifies how reachable a bound address is from other hosts. It
@@ -68,27 +73,27 @@ type Socket struct {
 	Protocol Protocol
 	Family   Family
 	// Address is the bound local address as the OS reports it, without the
-	// port: "127.0.0.1", "*", "::1", "0.0.0.0", "fe80::1". Wildcards appear
-	// as "*", "0.0.0.0" or "::".
+	// port or brackets: "127.0.0.1", "*", "::1", "0.0.0.0", "fe80::1%lo0".
+	// Wildcards appear as "*", "0.0.0.0" or "::"; link-local addresses carry
+	// their zone.
 	Address string
 	Port    int
-	// State is the socket state as reported ("LISTEN" for TCP listeners,
-	// empty for UDP, which has no listening state).
+	// State is StateListen for a TCP listener, or StateBound for a UDP
+	// socket or a TCP socket bound to the port without listening.
 	State string
 }
 
 // Exposure classifies the socket's bound address.
 func (s Socket) Exposure() Exposure {
-	return ClassifyAddress(s.Address)
+	return classify(s.Address)
 }
 
-// ClassifyAddress derives an Exposure from a bound address string.
-func ClassifyAddress(addr string) Exposure {
-	addr = strings.Trim(addr, "[]")
-	if addr == "*" || addr == "" {
+// classify derives an Exposure from a bound address string.
+func classify(addr string) Exposure {
+	if addr == "*" {
 		return ExposureAllInterfaces
 	}
-	ip, err := netip.ParseAddr(strings.SplitN(addr, "%", 2)[0])
+	ip, err := netip.ParseAddr(addr)
 	if err != nil {
 		return ExposureUnknown
 	}
@@ -121,15 +126,14 @@ type Process struct {
 	Command    string
 	WorkingDir string
 	// Unavailable maps a field to a short human-readable reason it could not
-	// be read, e.g. "permission denied" or "process exited". Never nil.
+	// be read, e.g. "permission denied" or "process exited". Never nil:
+	// adapters create it when they build the Process.
 	Unavailable map[Field]string
 }
 
-// MarkUnavailable records why a field is missing.
+// MarkUnavailable records why a field is missing. p.Unavailable must be
+// non-nil.
 func (p *Process) MarkUnavailable(f Field, reason string) {
-	if p.Unavailable == nil {
-		p.Unavailable = map[Field]string{}
-	}
 	p.Unavailable[f] = reason
 }
 
@@ -182,12 +186,3 @@ func (e *Error) Error() string {
 }
 
 func (e *Error) Unwrap() error { return e.Err }
-
-// KindOf returns the Kind of err if it is an *Error, or "" otherwise.
-func KindOf(err error) Kind {
-	var ie *Error
-	if errors.As(err, &ie) {
-		return ie.Kind
-	}
-	return ""
-}

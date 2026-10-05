@@ -59,8 +59,10 @@ func (i *Inspector) Inspect(ctx context.Context, q inspect.Query) (inspect.Resul
 		return inspect.Result{}, runError("lsof", err)
 	}
 	// lsof exits 1 with no output when nothing matches; a failure is
-	// distinguished by stderr text or another exit code.
-	if code != 0 && (code != 1 || len(bytes.TrimSpace(stderr)) > 0) {
+	// distinguished by stderr text or another exit code. Warnings (for
+	// example about an inaccessible file system) do not signal a failure.
+	noMatch := code == 1 && withoutWarnings(stderr) == ""
+	if code != 0 && !noMatch {
 		return inspect.Result{}, exitError("lsof", code, stderr)
 	}
 
@@ -73,16 +75,47 @@ func (i *Inspector) Inspect(ctx context.Context, q inspect.Query) (inspect.Resul
 		}
 	}
 
+	// Enrichment failures are recorded per field, so a cancelled context
+	// would otherwise surface as a result full of "unavailable" fields.
+	if err := ctx.Err(); err != nil {
+		return inspect.Result{}, err
+	}
 	owners := buildOwners(records, q)
 	for idx := range owners {
 		i.enrich(ctx, &owners[idx].Process)
+	}
+	if err := ctx.Err(); err != nil {
+		return inspect.Result{}, err
 	}
 	return inspect.Result{Query: q, Owners: owners}, nil
 }
 
 func findArgs(q inspect.Query) []string {
 	selector := string(q.Protocol) + ":" + strconv.Itoa(q.Port)
-	return []string{"-nP", "-F", "pcnLTtfPR0", "-i", selector}
+	return []string{"-nP", "-F", "pcnLTtfP0", "-i", selector}
+}
+
+// withoutWarnings returns stderr without lsof warnings, trimmed. A warning
+// is a line containing "WARNING" plus any indented continuation lines, as in
+//
+//	lsof: WARNING: can't stat() nfs file system /Volumes/share
+//	      Output information may be incomplete.
+func withoutWarnings(stderr []byte) string {
+	kept := []string{}
+	inWarning := false
+	for line := range strings.Lines(string(stderr)) {
+		continuation := strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
+		switch {
+		case strings.Contains(line, "WARNING"):
+			inWarning = true
+		case inWarning && continuation:
+			// Part of the warning above.
+		default:
+			inWarning = false
+			kept = append(kept, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, ""))
 }
 
 // enrich fills Command and WorkingDir, marking each field unavailable with a

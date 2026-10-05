@@ -20,6 +20,8 @@ const (
 	exitNoMatch  = 1 // no matching socket
 	exitBadInput = 2 // invalid input or usage
 	exitFailure  = 3 // inspection failed
+
+	exitInterrupted = 130 // interrupted; shell convention of 128 + SIGINT
 )
 
 // Version is the portpeek version, overridden at build time with -ldflags.
@@ -32,7 +34,7 @@ const helpText = `Usage: portpeek <port> [--tcp|--udp] [--json]
 Show which process is using a local port.
 
 Options:
-  --tcp       only look at TCP listeners
+  --tcp       only look at TCP sockets
   --udp       only look at UDP sockets
   --json      print machine-readable JSON (schema 1)
   --version   print the version and exit
@@ -40,9 +42,10 @@ Options:
 
 Exit codes:
   0  at least one process uses the port
-  1  no process uses the port
+  1  no listening or bound socket on the port
   2  invalid input
   3  inspection failed (tool missing, permission denied, command error)
+130  interrupted
 `
 
 // options holds the parsed command line.
@@ -74,6 +77,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, ins inspe
 
 	q := inspect.Query{Port: opts.port, Protocol: opts.protocol}
 	res, err := ins.Inspect(ctx, q)
+	if errors.Is(err, context.Canceled) {
+		_, _ = fmt.Fprintln(stderr, "portpeek: interrupted")
+		return exitInterrupted
+	}
 	if err != nil {
 		return reportFailure(stdout, stderr, q, err, opts.json)
 	}

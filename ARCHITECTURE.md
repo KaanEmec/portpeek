@@ -28,16 +28,22 @@ seam so parsers are tested against recorded fixtures, not live sockets.
 - `Owner{Process, Sockets}`: one process may bind several sockets on the port
   (IPv4 + IPv6, TCP + UDP). Several owners may share a port (SO_REUSEPORT, forks).
 - `Socket{Protocol, Family, Address, Port, State}`: `Address` is the bound local
-  address as reported (`127.0.0.1`, `*`, `::1`, `fe80::1`). `Exposure()` derives
-  loopback / all-interfaces / specific-interface from it. No claims about firewalls.
+  address as reported (`127.0.0.1`, `*`, `::1`, `fe80::1%lo0`). `State` is `LISTEN`
+  or `BOUND` (UDP, and TCP bound without listen). `Exposure()` derives loopback /
+  all-interfaces / specific-interface from the address. No claims about firewalls.
 - `Process{PID, Name, User, Command, WorkingDir}` with `Unavailable map[Field]string`
   recording why a field could not be read (permission, process exited, tool limit).
 - `Error{Kind, Op, Err}` with kinds `ToolMissing`, `PermissionDenied`, `CommandFailed`.
   The CLI maps kinds to messages and exit codes; adapters never print.
 
-Ownership rule: a process owns a port only through a TCP socket in LISTEN state or a
-UDP socket bound to the port with no peer. Established connections to or from the port
-are never reported as owners.
+Ownership rule: a process owns a port through any socket whose local port matches and
+that has no peer: TCP in LISTEN (reported `LISTEN`) or TCP bound without listen and
+UDP (reported `BOUND`). Sockets with a peer (established connections, connected UDP)
+are never owners, because they do not block the port.
+
+Visibility: without root, `lsof` silently omits other users' sockets. Every
+unprivileged answer therefore carries a hint line in text and `"complete": false`
+in JSON; "no listening or bound socket" never claims the port is free.
 
 ## CLI contract (internal/cli)
 
@@ -46,7 +52,7 @@ portpeek <port> [--tcp|--udp] [--json]
 ```
 
 Exit codes: `0` at least one owner, `1` no matching socket, `2` invalid input/usage,
-`3` inspection failed (tool missing, permission denied, command error).
+`3` inspection failed (tool missing, permission denied, command error), `130` interrupted.
 Text output lists each owner with labelled fields; unavailable fields print the reason,
 never a guess. Text ends with a one-line exposure explanation and a manual stop hint
 (`kill <pid>`) that the tool itself does not run. JSON (`--json`) is versioned
@@ -57,9 +63,10 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 | Decision | Choice | Why |
 |---|---|---|
 | Language / deps | Go, standard library for CLI; Charm libs only in `internal/tui` | Single small binary, no runtime |
-| macOS source | `lsof -nP -F pcnLTtfPR0 -i :PORT` then `ps -o command=` and `lsof -d cwd` per PID | Machine-readable, present on every macOS, no entitlements |
-| No-match detection | `lsof` exit 1 with empty stdout = no match; any stderr or exit >1 = failure | Observed behaviour; avoids false "nothing found" |
-| Testing | Parsers and renderers tested with fixture files; real-socket checks live in `go test -run Live` behind a build tag | Deterministic CI, honest platform claims |
+| macOS source | `lsof -nP -F pcnLTtfP0 -i :PORT` then `ps -o command=` and `lsof -d cwd` per PID | Machine-readable, present on every macOS, no entitlements |
+| No-match detection | `lsof` exit 1 with empty stdout and no non-WARNING stderr = no match; otherwise failure | Observed behaviour; avoids false "nothing found" |
+| Link-local IPv6 | `lsof` packs the scope index into the second group (`fe80:1::1`); adapter rewrites to `fe80::1%lo0` | Otherwise the shown address cannot be connected to |
+| Testing | Parsers and renderers tested with recorded `lsof` fixtures; one live-socket test per adapter, skipped under `go test -short` | Deterministic CI, honest platform claims |
 | Module path | `github.com/kaanemec/portpeek` | Placeholder until a remote exists; rename is one `sed` |
 | Platform selection | `//go:build` files in `cmd/portpeek/platform_*.go` choosing the default `Inspector` (adapters import the model, so selection sits above both) | Unsupported OS fails at runtime with a clear message, not silently |
 | Stop action (v0.2) | Separate `--stop` flag: re-inspect, show PID + name, confirm on a TTY, `--force` for scripts, SIGTERM only | Stale PID can never receive a signal unreviewed |
@@ -68,7 +75,7 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 
 | Version | Status | Notes |
 |---|---|---|
-| v0.1 macOS answer | in progress | model, CLI, lsof adapter, validation |
+| v0.1 macOS answer | done 2026-10-05 | model, CLI, lsof adapter, validation record in docs/validation.md |
 | v0.2 safe control + Linux | planned | `--stop` flow, `ss`/procfs adapter |
 | v1.0 cross-platform release | planned | Windows adapter, JSON freeze, GoReleaser, CI |
 | v1.1 port TUI | planned | inventory API on adapters, Bubble Tea table + details |

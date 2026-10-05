@@ -3,8 +3,10 @@ package lsof
 import (
 	"bytes"
 	"cmp"
-	"errors"
+	"encoding/binary"
 	"fmt"
+	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,6 +30,16 @@ type fileRecord struct {
 	protocol string // "P" field: "TCP", "UDP"
 	name     string // "n" field: "127.0.0.1:3000", "a:1->b:2", "/path"
 	state    string // "T" field "ST=<state>", TCP only
+}
+
+// interfaceName resolves a network interface index to its name. It is a
+// variable so tests can replace it.
+var interfaceName = func(index int) (string, error) {
+	ifi, err := net.InterfaceByIndex(index)
+	if err != nil {
+		return "", err
+	}
+	return ifi.Name, nil
 }
 
 // parseRecords parses lsof -F output into process records. Fields may be
@@ -90,9 +102,10 @@ func setFileField(f *fileRecord, id byte, value string) {
 
 // buildOwners applies the ownership rule to parsed records and groups the
 // surviving sockets by PID. A process owns the queried port only through a
-// TCP socket in LISTEN state or a UDP socket with no peer, bound to that
-// port locally. Processes left with no owned socket are dropped. Owners are
-// sorted by PID; sockets by protocol, family, then address.
+// socket bound to that port locally with no peer: a TCP listener, a TCP
+// socket bound without listening, or an unconnected UDP socket. Processes
+// left with no owned socket are dropped. Owners are sorted by PID; sockets by
+// protocol, family, then address.
 func buildOwners(records []processRecord, q inspect.Query) []inspect.Owner {
 	byPID := map[int]*inspect.Owner{}
 	for _, rec := range records {
@@ -166,23 +179,25 @@ func ownedSocket(f fileRecord, q inspect.Query) (inspect.Socket, bool) {
 		return inspect.Socket{}, false
 	}
 
-	// A connected socket prints "local->remote"; only a listener or an
-	// unconnected UDP socket can own the port.
+	// A connected socket prints "local->remote" and never owns the port,
+	// whatever its state.
 	if strings.Contains(f.name, "->") {
 		return inspect.Socket{}, false
 	}
-	if proto == inspect.TCP && f.state != "LISTEN" {
+
+	host, port, ok := splitAddress(f.name)
+	if !ok || port != q.Port {
 		return inspect.Socket{}, false
 	}
-
-	host, port, err := splitAddress(f.name)
-	if err != nil || port != q.Port {
-		return inspect.Socket{}, false
+	if family == inspect.IPv6 {
+		host = unpackScope(host)
 	}
 
-	state := f.state
-	if proto == inspect.UDP {
-		state = ""
+	// lsof reports a TCP socket bound without listen as ST=CLOSED; any
+	// peerless TCP state other than LISTEN still holds the port.
+	state := inspect.StateBound
+	if proto == inspect.TCP && f.state == "LISTEN" {
+		state = inspect.StateListen
 	}
 	return inspect.Socket{
 		Protocol: proto,
@@ -193,31 +208,57 @@ func ownedSocket(f fileRecord, q inspect.Query) (inspect.Socket, bool) {
 	}, true
 }
 
-var errNoPort = errors.New("no numeric port")
-
 // splitAddress splits an lsof network name such as "127.0.0.1:3000",
-// "*:3000", "[::1]:3000" or "[fe80::1%en0]:3000" into its host, without
-// brackets, and port. "*:*" has no port and returns errNoPort.
-func splitAddress(name string) (host string, port int, err error) {
+// "*:3000" or "[::1]:3000" into its host, without brackets, and port. ok is
+// false when the name has no numeric port ("*:*") or is malformed.
+func splitAddress(name string) (host string, port int, ok bool) {
 	i := strings.LastIndexByte(name, ':')
 	if i < 0 {
-		return "", 0, fmt.Errorf("address %q: missing port", name)
+		return "", 0, false
 	}
 	host, portStr := name[:i], name[i+1:]
 	if strings.HasPrefix(host, "[") {
 		if !strings.HasSuffix(host, "]") {
-			return "", 0, fmt.Errorf("address %q: unbalanced brackets", name)
+			return "", 0, false
 		}
 		host = host[1 : len(host)-1]
 	}
 	if host == "" {
-		return "", 0, fmt.Errorf("address %q: empty host", name)
+		return "", 0, false
 	}
-	port, err = strconv.Atoi(portStr)
+	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 0 || port > 65535 {
-		return "", 0, fmt.Errorf("address %q: %w", name, errNoPort)
+		return "", 0, false
 	}
-	return host, port, nil
+	return host, port, true
+}
+
+// unpackScope rewrites a link-local IPv6 address in which lsof left the
+// kernel's embedded interface index: macOS stores the scope of fe80::/10
+// addresses in the second 16-bit group, so lsof prints fe80::1%lo0 as
+// "fe80:1::1". The index is moved into a zone named after the interface, or
+// numbered when the name cannot be looked up. Other addresses are returned
+// unchanged.
+func unpackScope(host string) string {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	if !ip.Is6() || !ip.IsLinkLocalUnicast() {
+		return host
+	}
+	b := ip.As16()
+	index := int(binary.BigEndian.Uint16(b[2:4]))
+	if index == 0 || ip.Zone() != "" {
+		return host
+	}
+	b[2], b[3] = 0, 0
+
+	zone := strconv.Itoa(index)
+	if name, err := interfaceName(index); err == nil && name != "" {
+		zone = name
+	}
+	return netip.AddrFrom16(b).WithZone(zone).String()
 }
 
 func compareSockets(a, b inspect.Socket) int {
