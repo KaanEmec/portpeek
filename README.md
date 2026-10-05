@@ -1,29 +1,37 @@
-# Port Peek
+<h1 align="center">Port Peek</h1>
 
-**What is using this port?** Port Peek names the local process that owns a port
-and how its socket is bound, on macOS, Linux and Windows.
+<p align="center"><b>What is using this port? The local process and its binding, on macOS, Linux and Windows.</b></p>
 
-[![CI](https://github.com/kaanemec/portpeek/actions/workflows/ci.yml/badge.svg)](https://github.com/kaanemec/portpeek/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/kaanemec/portpeek)](https://github.com/kaanemec/portpeek/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center"><a href="https://github.com/kaanemec/portpeek/actions/workflows/ci.yml"><img src="https://github.com/kaanemec/portpeek/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/kaanemec/portpeek/releases/latest"><img src="https://img.shields.io/github/v/release/kaanemec/portpeek" alt="Release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a></p>
 
-![portpeek tui: every local port with its process, PID and exposure](docs/tui.png)
+<p align="center"><img src="docs/tui.png" alt="portpeek: every local port with its process, PID and exposure"></p>
+
+- `portpeek 3000` names the owner of one port in four lines.
+- `--detail` shows everything known; `--json` is for scripts.
+- `portpeek` on its own opens a live, searchable overview of every port.
+- `--stop` sends SIGTERM only after confirmation and a fresh identity check.
 
 ## Install
 
-macOS and Linux:
+### macOS and Linux
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kaanemec/portpeek/main/install.sh | sh
 ```
 
-The script picks the right archive, verifies its SHA-256 checksum and installs
-to `/usr/local/bin` (or `~/.local/bin` if that is not writable). It never runs
-`sudo`. To pin a version or choose the directory, set variables for `sh`:
+The script picks the right archive and verifies its SHA-256 checksum. It
+installs to `/usr/local/bin`, or `~/.local/bin` if that is not writable, and
+never runs `sudo`.
+
+<details><summary>Pin a version or choose the directory</summary>
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kaanemec/portpeek/main/install.sh | PORTPEEK_VERSION=v1.2.2 PORTPEEK_INSTALL_DIR="$HOME/bin" sh
+curl -fsSL https://raw.githubusercontent.com/kaanemec/portpeek/main/install.sh | PORTPEEK_VERSION=v1.3.0 PORTPEEK_INSTALL_DIR="$HOME/bin" sh
 ```
+
+</details>
+
+### Go
 
 With Go 1.27 or newer, on any platform:
 
@@ -31,14 +39,20 @@ With Go 1.27 or newer, on any platform:
 go install github.com/kaanemec/portpeek/cmd/portpeek@latest
 ```
 
-Windows: download `portpeek_<version>_windows_amd64.zip` from
-[Releases](https://github.com/kaanemec/portpeek/releases/latest), unpack it and
-put `portpeek.exe` on your `PATH` (or use the `go install` line above).
+### Windows
 
-Every release ships `checksums.txt`; manual verification steps are in
-[docs/reference.md](docs/reference.md#verifying-a-release).
+Download `portpeek_<version>_windows_amd64.zip` from
+[Releases](https://github.com/kaanemec/portpeek/releases/latest). Unpack it and
+put `portpeek.exe` on your `PATH`, or use the `go install` line above.
+
+Every release ships `checksums.txt`; see
+[verifying a release](docs/reference.md#verifying-a-release).
 
 ## Usage
+
+### One port
+
+Give a port to see who owns it:
 
 ```
 $ portpeek 3000
@@ -48,6 +62,8 @@ $ portpeek 3000
   stop: kill 13337
 other users' sockets hidden; run with sudo
 ```
+
+### Details
 
 `--detail` adds the user, working directory and both stop commands:
 
@@ -62,20 +78,33 @@ $ portpeek 3000 --detail
 other users' sockets hidden; run with sudo
 ```
 
-On a terminal the output is styled; several processes on one port get one row
+On a terminal the output is styled. Several processes on one port get one row
 each:
 
 ![portpeek 5353 and portpeek 5353 --detail in a terminal](docs/cli.png)
 
-`portpeek tui` opens a searchable table of every local port that refreshes every
-5 seconds (`--interval` to change). Keys: `↑/↓` move · `/` search · `s` sort ·
-`r` refresh · `p` pause · `Enter` details · `k` stop (in details) · `q` quit.
+### Overview (TUI)
 
-![portpeek tui details pane for port 5353](docs/tui-details.png)
+Run `portpeek` with no arguments to open it (`portpeek tui` also works): a
+searchable table of every local port, refreshed every 5 seconds (`--interval`
+to change). There is also a [light-terminal variant](docs/tui-light.png).
 
-There is also a [light-terminal variant](docs/tui-light.png).
+| Key | Action |
+|---|---|
+| `↑/↓` | move |
+| `/` | search |
+| `s` | sort |
+| `r` | refresh |
+| `p` | pause |
+| `Enter` | details |
+| `k` | stop (in details) |
+| `q` | quit |
 
-For scripts, `--json` prints a versioned document (schema 1); see
+![portpeek details pane for port 5353](docs/tui-details.png)
+
+### Scripts (JSON)
+
+`--json` prints a versioned document (schema 1), described in
 [docs/json.md](docs/json.md):
 
 ```
@@ -85,46 +114,47 @@ $ portpeek 3000 --json | grep -E '"(complete|pid|exposure)"'
           "exposure": "loopback"
 ```
 
-`portpeek 3000 --stop` asks for confirmation (`--force` in scripts), checks
-again that the same process still owns the port, and sends SIGTERM. It never
-sends SIGKILL; if the process is still running after 2 seconds it prints
-`kill -9 <pid>` for you to decide.
+### Stopping a process
+
+`portpeek 3000 --stop` asks for confirmation (`--force` in scripts). It checks
+again that the same process still owns the port, then sends SIGTERM. It never
+sends SIGKILL; if the process survives 2 seconds, it prints `kill -9 <pid>` for
+you to decide.
 
 ## What it tells you
 
 - **Owner**: process name, PID and user, for every process that holds the port.
-- **Command**: the command line (shortened to one line; full in `--json`) and
-  working directory.
-- **Binding**: address, protocol and state (`listening` or `bound`), with IPv4
-  and IPv6 of the same address shown as `(v4+v6)`.
+- **Command**: the command line (one line; full in `--json`) and working directory.
+- **Binding**: address, protocol and state (`listening` or `bound`). IPv4 and
+  IPv6 of the same address show as `(v4+v6)`.
 - **Exposure**: `loopback only`, `all interfaces` or `interface <address>`,
-  derived from the bound address; it says nothing about firewalls.
+  from the bound address. It says nothing about firewalls.
 - **Honest gaps**: without root, other users' sockets are hidden (macOS) or
-  shown without an owner (Linux); Port Peek says so in a hint line and
-  `"complete": false` instead of claiming the port is free. Fields it cannot
-  read are marked unavailable with a reason, never guessed.
+  have no owner (Linux). Port Peek says so in a hint line and in
+  `"complete": false`, instead of calling the port free. Unreadable fields are
+  marked unavailable with a reason, never guessed.
 
 ## Platforms
 
-| OS | Source | Notes |
-|---|---|---|
-| macOS | `lsof` + `ps` | other users' sockets need `sudo` |
-| Linux | `ss` + `/proc` | other users' sockets show as an unknown owner without root |
-| Windows | `netstat` + PowerShell | `--stop` not supported yet; verified by the CI live test |
+| OS | Discovery | Without root | Stop |
+|---|---|---|---|
+| macOS | `lsof` + `ps` | other users' sockets hidden; use `sudo` | `--stop` |
+| Linux | `ss` + `/proc` | other users' sockets show an unknown owner | `--stop` |
+| Windows | `netstat` + PowerShell | other users' command lines need Administrator | not supported yet |
 
-Manual checks with real output are in [docs/validation.md](docs/validation.md).
+Windows is verified by the CI live test. Manual checks with real output are in
+[docs/validation.md](docs/validation.md).
 
 ## Safety
 
 - Read-only by default: it runs the OS tools above and changes nothing.
-- Stopping happens only with `--stop` (or `k` in the TUI) after confirmation,
-  rechecks the process identity right before signalling, and sends SIGTERM only.
+- Stopping needs `--stop` (or `k` in the TUI) and a confirmation. It rechecks
+  the process identity right before signalling and sends SIGTERM only.
 - No telemetry and no network access.
 
 ## More
 
-- [docs/reference.md](docs/reference.md): every option, output format, exit
-  codes, permissions per OS, limitations
+- [docs/reference.md](docs/reference.md): options, output, exit codes, permissions, limitations
 - [docs/json.md](docs/json.md): JSON contract and compatibility policy
 - [CHANGELOG.md](CHANGELOG.md): release notes
 - [ARCHITECTURE.md](ARCHITECTURE.md): design and decisions

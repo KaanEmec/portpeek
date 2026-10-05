@@ -29,6 +29,159 @@ func (f *fakeTUI) run(_ context.Context, opts TUIOptions) error {
 	return f.err
 }
 
+func TestRun_Overview(t *testing.T) {
+	t.Parallel()
+
+	const noTerminal = "portpeek: no port given and no interactive terminal; usage: portpeek <port>\n" +
+		usageHint + "\n"
+
+	tests := []struct {
+		name          string
+		args          []string
+		terminal      bool
+		wantCode      int
+		wantErr       string
+		wantCalls     int
+		wantInterval  time.Duration
+		wantInspected bool
+	}{
+		{
+			name:         "no arguments",
+			terminal:     true,
+			wantCode:     exitOK,
+			wantCalls:    1,
+			wantInterval: defaultTUIInterval,
+		},
+		{
+			name:         "interval",
+			args:         []string{"--interval", "2s"},
+			terminal:     true,
+			wantCode:     exitOK,
+			wantCalls:    1,
+			wantInterval: 2 * time.Second,
+		},
+		{
+			name:         "separator only",
+			args:         []string{"--"},
+			terminal:     true,
+			wantCode:     exitOK,
+			wantCalls:    1,
+			wantInterval: defaultTUIInterval,
+		},
+		{
+			name:         "tui alias",
+			args:         []string{"tui", "--interval=3s"},
+			terminal:     true,
+			wantCode:     exitOK,
+			wantCalls:    1,
+			wantInterval: 3 * time.Second,
+		},
+		{
+			name:     "no terminal",
+			wantCode: exitBadInput,
+			wantErr:  noTerminal,
+		},
+		{
+			name:     "interval without a terminal",
+			args:     []string{"--interval", "2s"},
+			wantCode: exitBadInput,
+			wantErr:  noTerminal,
+		},
+		{
+			name:     "interval below minimum",
+			args:     []string{"--interval", "500ms"},
+			terminal: true,
+			wantCode: exitBadInput,
+			wantErr:  "portpeek: --interval must be at least 1s, got 500ms\n" + usageHint + "\n",
+		},
+		{
+			name:     "json without a port",
+			args:     []string{"--json"},
+			terminal: true,
+			wantCode: exitBadInput,
+			wantErr:  "portpeek: --json requires a port\n" + usageHint + "\n",
+		},
+		{
+			name:     "detail without a port",
+			args:     []string{"--detail"},
+			terminal: true,
+			wantCode: exitBadInput,
+			wantErr:  "portpeek: --detail requires a port\n" + usageHint + "\n",
+		},
+		{
+			name:     "protocol without a port",
+			args:     []string{"--interval", "2s", "--tcp"},
+			terminal: true,
+			wantCode: exitBadInput,
+			wantErr:  "portpeek: --tcp requires a port\n" + usageHint + "\n",
+		},
+		{
+			name:     "stop without a port",
+			args:     []string{"--stop"},
+			terminal: true,
+			wantCode: exitBadInput,
+			wantErr:  "portpeek: --stop requires a port\n" + usageHint + "\n",
+		},
+		{
+			name:     "unknown flag",
+			args:     []string{"--bogus"},
+			terminal: true,
+			wantCode: exitBadInput,
+			wantErr:  "portpeek: flag provided but not defined: -bogus\n" + usageHint + "\n",
+		},
+		{
+			name:          "port",
+			args:          []string{"3000"},
+			terminal:      true,
+			wantCode:      exitNoMatch,
+			wantInspected: true,
+		},
+		{
+			name:     "interval with a port",
+			args:     []string{"3000", "--interval", "2s"},
+			terminal: true,
+			wantCode: exitBadInput,
+			wantErr:  "portpeek: flag provided but not defined: -interval\n" + usageHint + "\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ins := &fakeInspector{}
+			ui := &fakeTUI{}
+			deps := Deps{
+				Inspector:   ins,
+				Lister:      fakeLister{},
+				TUI:         ui.run,
+				interactive: func() bool { return tt.terminal },
+			}
+			var stdout, stderr bytes.Buffer
+
+			code := Run(t.Context(), tt.args, &stdout, &stderr, deps)
+
+			if code != tt.wantCode {
+				t.Errorf("exit code = %d, want %d", code, tt.wantCode)
+			}
+			if got := stderr.String(); got != tt.wantErr {
+				t.Errorf("stderr = %q, want %q", got, tt.wantErr)
+			}
+			if ins.called != tt.wantInspected {
+				t.Errorf("inspector called = %t, want %t", ins.called, tt.wantInspected)
+			}
+			if !tt.wantInspected && stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+			if ui.calls != tt.wantCalls {
+				t.Fatalf("TUI calls = %d, want %d", ui.calls, tt.wantCalls)
+			}
+			if tt.wantCalls > 0 && ui.opts.Interval != tt.wantInterval {
+				t.Errorf("interval = %s, want %s", ui.opts.Interval, tt.wantInterval)
+			}
+		})
+	}
+}
+
 func TestRun_TUI(t *testing.T) {
 	t.Parallel()
 

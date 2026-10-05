@@ -32,12 +32,13 @@ var Version = "dev"
 
 const usageHint = "Try 'portpeek --help' for usage."
 
-const helpText = `Usage: portpeek <port> [--tcp|--udp] [--detail|--json]
+const helpText = `Usage: portpeek                       open the port overview (TUI)
+       portpeek <port> [--tcp|--udp] [--detail|--json]
        portpeek <port> --stop [--pid <pid>] [--force] [--tcp|--udp]
-       portpeek tui [--interval <duration>]
+       portpeek tui [--interval <duration>]   same as plain portpeek
 
-Show which process is using a local port. "portpeek tui" opens a searchable,
-refreshing overview of every local port.
+Show which process is using a local port. Without a port, portpeek opens a
+searchable, refreshing overview of every local port.
 
 Options:
   --tcp        only look at TCP sockets
@@ -51,7 +52,7 @@ Options:
   --version    print the version and exit
   -h, --help   show this help and exit
 
-tui options:
+Overview options (portpeek, portpeek tui):
   --interval <duration>  auto-refresh period, e.g. 10s (default 5s, minimum 1s)
 
 --stop re-inspects the port right before signalling and stops nothing if the
@@ -85,20 +86,34 @@ type options struct {
 type Deps struct {
 	// Inspector answers one-port queries.
 	Inspector inspect.Inspector
-	// Lister enumerates every local port; only the tui subcommand uses it.
+	// Lister enumerates every local port; only the overview uses it.
 	Lister inspect.Lister
-	// TUI runs the terminal interface for the tui subcommand. It is
-	// injected because the interface itself builds on this package.
+	// TUI runs the terminal interface of the overview. It is injected
+	// because the interface itself builds on this package.
 	TUI func(ctx context.Context, opts TUIOptions) error
+
+	// interactive reports whether stdin and stdout are both terminals. Nil
+	// means interactiveTerminal; tests replace it.
+	interactive func() bool
 }
 
 // Run parses args (without the program name), runs the inspector, writes the
-// output, and returns the process exit code. Only --stop and the stop action
-// of the tui subcommand have side effects; otherwise Run is read-only.
+// output, and returns the process exit code. Without a port, or with the tui
+// subcommand, it opens the overview instead. Only --stop and the stop action
+// of the overview have side effects; otherwise Run is read-only.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, deps Deps) int {
 	out := stdio{stdout: stdout, stderr: stderr}
 	if len(args) > 0 && args[0] == tuiCommand {
 		return runTUI(ctx, args[1:], out, deps)
+	}
+
+	overview, err := isOverview(args)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "portpeek: %v\n%s\n", err, usageHint)
+		return exitBadInput
+	}
+	if overview {
+		return runOverview(ctx, args, out, deps)
 	}
 	return run(ctx, args, out, deps.Inspector, systemStopper())
 }
@@ -160,55 +175,19 @@ func reportInterrupted(stderr io.Writer) int {
 	return exitInterrupted
 }
 
-// parseArgs parses flags and the single positional port. Flags may appear
-// before or after the port, which the standard flag package does not allow on
-// its own, so flag parsing is repeated after each positional argument.
+// parseArgs parses flags and the single positional port.
 func parseArgs(args []string) (options, error) {
 	var opts options
 	var tcp, udp bool
+	fs := newPortFlagSet(&opts, &tcp, &udp)
 
-	fs := flag.NewFlagSet("portpeek", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.BoolVar(&tcp, "tcp", false, "")
-	fs.BoolVar(&udp, "udp", false, "")
-	fs.BoolVar(&opts.json, "json", false, "")
-	fs.BoolVar(&opts.detail, "detail", false, "")
-	fs.BoolVar(&opts.version, "version", false, "")
-	fs.BoolVar(&opts.stop, "stop", false, "")
-	fs.BoolVar(&opts.force, "force", false, "")
-	fs.Func("pid", "", func(value string) error {
-		pid, err := strconv.Atoi(value)
-		if err != nil || pid < 1 {
-			return errors.New("must be a positive process ID")
-		}
-		opts.pid = pid
-		return nil
-	})
-
-	// Everything after a literal "--" is positional.
-	var positional []string
-	if i := slices.Index(args, "--"); i >= 0 {
-		positional = append(positional, args[i+1:]...)
-		args = args[:i]
+	positional, err := parseInterspersed(fs, args)
+	if errors.Is(err, flag.ErrHelp) {
+		return options{help: true}, nil
 	}
-
-	var leading []string
-	rest := args
-	for {
-		if err := fs.Parse(rest); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return options{help: true}, nil
-			}
-			return options{}, err
-		}
-		rest = fs.Args()
-		if len(rest) == 0 {
-			break
-		}
-		leading = append(leading, rest[0])
-		rest = rest[1:]
+	if err != nil {
+		return options{}, err
 	}
-	positional = append(leading, positional...)
 
 	if opts.version {
 		return options{version: true}, nil
@@ -238,6 +217,56 @@ func parseArgs(args []string) (options, error) {
 	}
 	opts.port = port
 	return opts, nil
+}
+
+// newPortFlagSet returns the flag set of the one-port form, which stores the
+// flag values in opts, tcp and udp.
+func newPortFlagSet(opts *options, tcp, udp *bool) *flag.FlagSet {
+	fs := flag.NewFlagSet("portpeek", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.BoolVar(tcp, "tcp", false, "")
+	fs.BoolVar(udp, "udp", false, "")
+	fs.BoolVar(&opts.json, "json", false, "")
+	fs.BoolVar(&opts.detail, "detail", false, "")
+	fs.BoolVar(&opts.version, "version", false, "")
+	fs.BoolVar(&opts.stop, "stop", false, "")
+	fs.BoolVar(&opts.force, "force", false, "")
+	fs.Func("pid", "", func(value string) error {
+		pid, err := strconv.Atoi(value)
+		if err != nil || pid < 1 {
+			return errors.New("must be a positive process ID")
+		}
+		opts.pid = pid
+		return nil
+	})
+	return fs
+}
+
+// parseInterspersed parses args with fs and returns the positional
+// arguments. Flags may appear before or after a positional argument, which
+// the standard flag package does not allow on its own, so parsing is
+// repeated after each one. Everything after a literal "--" is positional.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	if i := slices.Index(args, "--"); i >= 0 {
+		positional = append(positional, args[i+1:]...)
+		args = args[:i]
+	}
+
+	var leading []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return nil, err
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		leading = append(leading, rest[0])
+		rest = rest[1:]
+	}
+	return append(leading, positional...), nil
 }
 
 // parsePort validates the positional arguments as exactly one port number.

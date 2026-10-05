@@ -362,16 +362,23 @@ func TestRun(t *testing.T) {
 			wantOut:  "portpeek dev\n",
 		},
 		{
-			name:     "missing port",
-			args:     nil,
-			wantCode: 2,
-			wantErr:  "portpeek: missing port argument\nTry 'portpeek --help' for usage.\n",
+			name:     "version with a one-port flag",
+			args:     []string{"--json", "--version"},
+			wantCode: 0,
+			wantOut:  "portpeek dev\n",
 		},
 		{
-			name:     "only flags",
-			args:     []string{"--json"},
+			name:     "help with a one-port flag",
+			args:     []string{"--json", "--help"},
+			wantCode: 0,
+			wantOut:  helpText,
+		},
+		{
+			name:     "invalid pid without a port",
+			args:     []string{"--pid", "abc"},
 			wantCode: 2,
-			wantErr:  "portpeek: missing port argument\nTry 'portpeek --help' for usage.\n",
+			wantErr: "portpeek: invalid value \"abc\" for flag -pid: must be a positive process ID\n" +
+				"Try 'portpeek --help' for usage.\n",
 		},
 		{
 			name:     "non numeric port",

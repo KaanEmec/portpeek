@@ -90,7 +90,7 @@ All exit 2, write to stderr, and end with `Try 'portpeek --help' for usage.`
 ```
 abc          invalid port "abc": must be a number between 1 and 65535
 0 / 70000    invalid port 0: must be between 1 and 65535 (same form for 70000)
-(no args)    missing port argument
+(no args)    opens the TUI on a terminal (since 1.3.0); piped: "no port given and no interactive terminal", exit 2
 47101 --tcp --udp   --tcp and --udp cannot be used together
 47101 --bogus       flag provided but not defined: -bogus
 abc --json   same message as `abc`; nothing on stdout

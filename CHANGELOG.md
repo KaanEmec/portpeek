@@ -7,6 +7,13 @@ compatibility policy, described in [docs/json.md](docs/json.md).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-05
+
+### Changed
+
+- `portpeek` with no arguments opens the TUI (`portpeek tui` still works);
+  without a terminal it prints usage and exits 2.
+
 ## [1.2.2] - 2026-10-05
 
 ### Changed
@@ -103,7 +110,8 @@ First public release: everything below from 1.0.0 to 1.2.0 ships together.
 - Exit codes: `0` at least one owner, `1` no matching socket, `2` invalid
   input, `3` inspection failed.
 
-[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/kaanemec/portpeek/releases/tag/v1.3.0
 [1.2.2]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.2
 [1.2.1]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.1
 [1.2.0]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.0

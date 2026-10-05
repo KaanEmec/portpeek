@@ -7,7 +7,7 @@ exit codes, permissions per OS and known limitations. The short version is the
 - [Install](#install)
 - [Usage and options](#usage-and-options)
 - [Output](#output)
-- [Port overview: `portpeek tui`](#port-overview-portpeek-tui)
+- [Port overview: `portpeek`](#port-overview-portpeek)
 - [Stopping a process](#stopping-a-process)
 - [Exit codes](#exit-codes)
 - [Permissions](#permissions)
@@ -36,7 +36,7 @@ or `wget` when `curl` is missing, and never runs `sudo`.
 | `PORTPEEK_INSTALL_DIR` | Directory for the binary. Default: `/usr/local/bin` when writable, otherwise `$HOME/.local/bin` (created if needed). |
 
 ```
-curl -fsSL https://raw.githubusercontent.com/kaanemec/portpeek/main/install.sh | PORTPEEK_VERSION=v1.2.2 sh
+curl -fsSL https://raw.githubusercontent.com/kaanemec/portpeek/main/install.sh | PORTPEEK_VERSION=v1.3.0 sh
 ```
 
 If the directory is not writable the script says so and exits; re-run it with
@@ -78,9 +78,10 @@ runtime dependencies beyond the OS tools listed above; put it anywhere on your
 ## Usage and options
 
 ```
-Usage: portpeek <port> [--tcp|--udp] [--detail|--json]
+Usage: portpeek                       open the port overview (TUI)
+       portpeek <port> [--tcp|--udp] [--detail|--json]
        portpeek <port> --stop [--pid <pid>] [--force] [--tcp|--udp]
-       portpeek tui [--interval <duration>]
+       portpeek tui [--interval <duration>]   same as plain portpeek
 
 Options:
   --tcp        only look at TCP sockets
@@ -94,7 +95,7 @@ Options:
   --version    print the version and exit
   -h, --help   show this help and exit
 
-tui options:
+Overview options (portpeek, portpeek tui):
   --interval <duration>  auto-refresh period, e.g. 10s (default 5s, minimum 1s)
 ```
 
@@ -214,16 +215,24 @@ sockets and TCP sockets bound without listening. With no match, `owners` is
 The full field reference, the error object and the compatibility policy are in
 [docs/json.md](json.md).
 
-## Port overview: `portpeek tui`
+## Port overview: `portpeek`
 
-`portpeek tui [--interval 5s]` lists every listening TCP and bound UDP socket
-with its port, protocol, binding, process, PID and exposure, and refreshes on
-the interval (minimum 1s). Keys: `↑/↓` move, `/` search by port or process,
+`portpeek` with no port, or the explicit alias `portpeek tui`, opens the
+overview; `--interval 5s` sets the refresh. It lists every listening TCP and
+bound UDP socket with its port, protocol, binding, process, PID and exposure,
+and refreshes on the interval (minimum 1s). Keys: `↑/↓` move, `/` search by port or process,
 `Esc` clear, `s` sort by port or process, `r` refresh, `p` pause, `Enter`
 details, `q` quit. The details pane shows the same text as
 `portpeek <port> --detail`; `k` there stops the shown process after a `y`
 confirmation, using the same identity recheck and SIGTERM-only rule as
-`--stop`. Browsing never changes anything. The table needs a terminal; it
+`--stop`. Browsing never changes anything.
+
+The overview needs an interactive terminal. When stdin or stdout is not one
+(`portpeek </dev/null`, `portpeek | cat`, a script that forgot the port),
+plain `portpeek` prints
+`portpeek: no port given and no interactive terminal; usage: portpeek <port>`
+and exits 2 instead of starting it. A one-port flag without a port, such as
+`portpeek --json`, is also a usage error (`--json requires a port`). The table
 respects `NO_COLOR`, hides columns below 80 columns, and shows the
 hidden-sockets hint when it applies. "Usage" here means which process owns a
 port; the table measures no traffic.
@@ -253,7 +262,8 @@ is not supported yet (see [Windows](#windows)).
 
 - `0` at least one process uses the port (with `--stop`: SIGTERM was sent);
   `1` no listening or bound socket
-- `2` invalid input (bad or missing port, `--tcp` with `--udp`, unknown flag)
+- `2` invalid input (bad port, `--tcp` with `--udp`, unknown flag, a one-port
+  flag without a port, no port and no interactive terminal)
 - `3` inspection failed (`lsof` or `ss` missing, permission denied, command error)
 - `4` `--stop` stopped nothing (declined, no `--force` without a terminal,
   several owners and no `--pid`, unknown owner, process changed, signal failed)
