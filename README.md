@@ -13,7 +13,13 @@
 
 ## Install
 
-### macOS and Linux
+### Homebrew (macOS and Linux)
+
+```sh
+brew install kaanemec/tap/portpeek
+```
+
+### Install script (macOS and Linux)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kaanemec/portpeek/main/install.sh | sh

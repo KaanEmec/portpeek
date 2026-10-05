@@ -7,6 +7,13 @@ compatibility policy, described in [docs/json.md](docs/json.md).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-05
+
+### Added
+
+- Homebrew: `brew install kaanemec/tap/portpeek` (macOS and Linux), published
+  to kaanemec/homebrew-tap by the release workflow.
+
 ## [1.3.0] - 2026-10-05
 
 ### Changed
@@ -110,7 +117,8 @@ First public release: everything below from 1.0.0 to 1.2.0 ships together.
 - Exit codes: `0` at least one owner, `1` no matching socket, `2` invalid
   input, `3` inspection failed.
 
-[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/kaanemec/portpeek/releases/tag/v1.3.1
 [1.3.0]: https://github.com/kaanemec/portpeek/releases/tag/v1.3.0
 [1.2.2]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.2
 [1.2.1]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.1

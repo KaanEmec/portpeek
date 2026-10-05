@@ -16,6 +16,18 @@ exit codes, permissions per OS and known limitations. The short version is the
 
 ## Install
 
+### Homebrew (macOS, Linux)
+
+```sh
+brew install kaanemec/tap/portpeek
+```
+
+The cask lives in [kaanemec/homebrew-tap](https://github.com/kaanemec/homebrew-tap)
+and is updated by the release workflow on every tag. The binaries are not
+Apple-signed, so on macOS the cask clears the download quarantine flag after
+install; without that, Gatekeeper would block the first run. Upgrade with
+`brew upgrade portpeek`, remove with `brew uninstall portpeek`.
+
 ### Install script (macOS, Linux)
 
 ```

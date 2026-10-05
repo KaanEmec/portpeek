@@ -60,3 +60,26 @@ changelog:
 release:
   draft: false
   prerelease: auto
+
+homebrew_casks:
+  - name: portpeek
+    repository:
+      owner: kaanemec
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/kaanemec/portpeek
+    description: What is using this port? Process, PID, command and exposure, plus a live TUI
+    license: MIT
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "portpeek {{ .Tag }}"
+    hooks:
+      post:
+        # The binaries are not Apple-signed; clear the download quarantine
+        # so macOS does not block the first run.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/portpeek"]
+          end
