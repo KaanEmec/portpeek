@@ -44,7 +44,7 @@ First public release: everything below from 1.0.0 to 1.2.0 ships together.
 - Platform-specific stop hint (`taskkill /PID` on Windows); `complete` no longer
   depends on a Unix uid on Windows.
 
-### Planned for 1.0.0
+### Release (1.0.0)
 - JSON output schema 1 frozen and documented in [docs/json.md](docs/json.md).
 - Prebuilt binaries for macOS (amd64, arm64), Linux (amd64, arm64) and Windows
   (amd64) with SHA-256 checksums, published by GoReleaser from a version tag.
