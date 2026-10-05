@@ -34,6 +34,12 @@ func (f *fakeInspector) Inspect(_ context.Context, q inspect.Query) (inspect.Res
 	return res, f.err
 }
 
+// stopLine is the Stop field of a text result, which names the platform's
+// own stop command (kill on Unix, taskkill on Windows).
+func stopLine(pid int) string {
+	return "  Stop:         " + stopHint(pid) + "\n"
+}
+
 // setPrivileged overrides privileged for the rest of the test. Callers must
 // not run in parallel with other tests.
 func setPrivileged(t *testing.T, v bool) {
@@ -89,14 +95,13 @@ const unknownText = `Port 3000/tcp is used by an unknown process
   Working dir:  unavailable (not readable without elevated privileges)
 `
 
-const nodeText = `Port 3000/tcp is used by node (PID 48213)
+var nodeText = `Port 3000/tcp is used by node (PID 48213)
   Address:      127.0.0.1:3000 (IPv4, LISTEN)
   Exposure:     loopback only — accepts connections from this machine only
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
-  Stop:         kill 48213
-`
+` + stopLine(48213)
 
 const nodeJSON = `{
   "schema": 1,
@@ -234,8 +239,7 @@ func TestRun(t *testing.T) {
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
-  Stop:         kill 48213
-`,
+` + stopLine(48213),
 		},
 		{
 			name:     "two owners",
@@ -250,16 +254,14 @@ Port 3000/tcp is used by node (PID 48213)
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
-  Stop:         kill 48213
-
+` + stopLine(48213) + `
 Port 3000/tcp is used by python3 (PID 500)
   Address:      *:3000 (IPv6, LISTEN)
   Exposure:     all interfaces — accepts connections on every network interface (firewall not checked)
   User:         root
   Command:      python3 -m http.server 3000
   Working dir:  /srv
-  Stop:         kill 500
-`,
+` + stopLine(500),
 		},
 		{
 			name:     "mixed tcp udp sockets with differing exposure",
@@ -276,8 +278,7 @@ Port 3000/tcp is used by python3 (PID 500)
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
-  Stop:         kill 48213
-`,
+` + stopLine(48213),
 		},
 		{
 			name:     "several sockets with same exposure print one line",
@@ -291,8 +292,7 @@ Port 3000/tcp is used by python3 (PID 500)
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
-  Stop:         kill 48213
-`,
+` + stopLine(48213),
 		},
 		{
 			name:     "unavailable fields print reasons",
@@ -305,8 +305,7 @@ Port 3000/tcp is used by python3 (PID 500)
   User:         unavailable (process exited)
   Command:      unavailable (permission denied)
   Working dir:  unavailable (permission denied)
-  Stop:         kill 77
-`,
+` + stopLine(77),
 		},
 		{
 			name:     "unknown owner text",
@@ -390,8 +389,7 @@ Port 3000/tcp is used by python3 (PID 500)
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
-  Stop:         kill 48213
-`,
+` + stopLine(48213),
 		},
 		{
 			name:     "no match",
@@ -472,8 +470,7 @@ Port 3000/tcp is used by python3 (PID 500)
   User:         kaanemec
   Command:      node server.js
   Working dir:  /Users/kaanemec/app
-  Stop:         kill 48213
-`,
+` + stopLine(48213),
 		},
 		{
 			name:       "interrupted",

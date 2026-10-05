@@ -2,12 +2,15 @@ module github.com/kaanemec/portpeek
 
 go 1.27
 
-require golang.org/x/term v0.46.0
+require (
+	charm.land/bubbles/v2 v2.2.1
+	charm.land/bubbletea/v2 v2.0.10
+	charm.land/lipgloss/v2 v2.0.6
+	golang.org/x/term v0.46.0
+)
 
 require (
-	charm.land/bubbles/v2 v2.2.1 // indirect
-	charm.land/bubbletea/v2 v2.0.10 // indirect
-	charm.land/lipgloss/v2 v2.0.6 // indirect
+	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
 	github.com/charmbracelet/x/ansi v0.11.8 // indirect

@@ -486,7 +486,7 @@ func TestInspector_List_NoSockets(t *testing.T) {
 		{
 			name: "only connections",
 			resp: response{stdout: "p372\x00cclaude\x00Lkaanemec\x00\n" +
-				"f13\x00tIPv4\x00PTCP\x00n10.134.16.4:63022->160.79.104.10:443\x00TST=ESTABLISHED\x00\n"},
+				"f13\x00tIPv4\x00PTCP\x00n10.0.0.5:63022->203.0.113.20:443\x00TST=ESTABLISHED\x00\n"},
 		},
 	}
 	for _, tt := range tests {

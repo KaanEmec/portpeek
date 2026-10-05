@@ -16,7 +16,8 @@ internal/inspect/ss     Linux adapter: runs `ss`, parses rows, enriches from /pr
 internal/inspect/netstat Windows adapter: `netstat -ano` per protocol, PowerShell Win32_Process
 cmd/portpeek/platform_* build-tagged selection of the default Inspector per OS
 internal/tui            `portpeek tui`: Bubble Tea table over `Lister`, details via `Inspector`,
-                        stop via the shared core in internal/cli
+                        stop via cli.StopVerified. cli does not import tui: main injects
+                        tui.Run through cli.Deps to avoid the cycle (tui uses cli's renderer)
 ```
 
 Data flow: `cli` builds a `Query` → platform `Inspector.Inspect` → `Result` → `cli` renders.
@@ -75,14 +76,14 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 
 | Decision | Choice | Why |
 |---|---|---|
-| Language / deps | Go, standard library plus `golang.org/x/term` (TTY detection for `--stop`); Charm libs only in `internal/tui` | Single small binary, no runtime. A mode-bits check mistakes `/dev/null` for a terminal |
+| Language / deps | Go, standard library plus `golang.org/x/term` (TTY detection for `--stop`); Charm v2 libs (`charm.land/{bubbletea,bubbles,lipgloss}/v2`) only in `internal/tui` | Single small binary, no runtime. A mode-bits check mistakes `/dev/null` for a terminal |
 | macOS source | `lsof -nP -F pcnLTtfP0 -i :PORT` then `ps -o command=` and `lsof -d cwd` per PID | Machine-readable, present on every macOS, no entitlements |
-| Windows source | `netstat -a -n -o -p {TCP,TCPv6,UDP,UDPv6}` then `Get-CimInstance Win32_Process` per PID via `powershell -NoProfile` | Present on every Windows, no admin needed for PIDs. Unverified on real Windows until CI runs; `Get-NetTCPConnection` is the locale-independent fallback if netstat's translated state words prove a problem |
+| Windows source | `netstat -a -n -o -p {TCP,TCPv6,UDP,UDPv6}` then `Get-CimInstance Win32_Process` per PID via `powershell -NoProfile` | Present on every Windows, no admin needed for PIDs. Live test passed on windows-latest CI (2026-10-05). `Get-NetTCPConnection` is the locale-independent fallback if netstat's translated state words prove a problem |
 | Linux source | `ss -H -a -n -p -t -u 'sport = :PORT'` then `/proc/PID/{comm,cmdline,cwd,status}` | iproute2 is ubiquitous; procfs needs no extra tool. `-H` needs iproute2 ≥ 4.13; wildcard `*` means dual-stack IPv6, `0.0.0.0`/`[::]`/`*` all stored as `*` |
 | No-match detection | `lsof` exit 1 with empty stdout and no non-WARNING stderr = no match; otherwise failure | Observed behaviour; avoids false "nothing found" |
 | Link-local IPv6 | `lsof` packs the scope index into the second group (`fe80:1::1`); adapter rewrites to `fe80::1%lo0` | Otherwise the shown address cannot be connected to |
 | Testing | Parsers and renderers tested with recorded `lsof` fixtures; one live-socket test per adapter, skipped under `go test -short` | Deterministic CI, honest platform claims |
-| Module path | `github.com/kaanemec/portpeek` | Placeholder until a remote exists; rename is one `sed` |
+| Module path | `github.com/kaanemec/portpeek` | Matches the public GitHub repo |
 | Platform selection | `//go:build` files in `cmd/portpeek/platform_*.go` choosing the default `Inspector` (adapters import the model, so selection sits above both) | Unsupported OS fails at runtime with a clear message, not silently |
 | Stop action | `--stop`: print the normal result, pick one owner (`--pid` when several), confirm on a TTY or require `--force`, re-inspect and require same PID + name, send SIGTERM, wait 2s, report; never SIGKILL | Stale PID can never receive a signal unreviewed; `internal/cli/stop.go` |
 
@@ -92,7 +93,8 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 |---|---|---|
 | v0.1 macOS answer | done 2026-10-05 | model, CLI, lsof adapter, validation record in docs/validation.md |
 | v0.2 safe control + Linux | done 2026-10-05 | `--stop` flow; `ss`/procfs adapter validated in Docker (golang:1.27, iproute2 6.15) and CI ubuntu runner |
-| v1.0 cross-platform release | code complete, release blocked | Windows adapter unverified until a Windows CI run; GoReleaser + release workflow ready; needs a real remote/module path and licence confirmation before tagging |
-| v1.1 port TUI | in progress | `Lister` on all adapters; Bubble Tea table, details, refresh, search, stop from details |
+| v1.0 cross-platform release | ready to tag | Windows live test green on CI; GoReleaser + release workflow ready; remote github.com/kaanemec/portpeek, MIT confirmed by owner 2026-10-05 |
+| v1.2 readable output | planned (owner request 2026-10-05) | compact default, `--detail` view, shared renderer with the TUI detail pane |
+| v1.1 port TUI | done 2026-10-05 | `Lister` on all adapters; Bubble Tea table, details, refresh, search, stop from details; verified live on macOS |
 
 Out of scope: remote scanning, Docker management, traffic measurement, history.

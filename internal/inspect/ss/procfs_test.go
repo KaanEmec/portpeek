@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
@@ -20,6 +21,9 @@ const fixtureCwd = "/srv/sockets"
 // survive every checkout. It returns the new procfs root.
 func procTree(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("procfs is Linux-only; Windows rewrites symlink targets with backslashes")
+	}
 	root := filepath.Join(t.TempDir(), "proc")
 	if err := os.CopyFS(root, os.DirFS(filepath.Join("testdata", "proc"))); err != nil {
 		t.Fatalf("copying proc fixture: %v", err)

@@ -30,7 +30,7 @@ type TUIOptions struct {
 
 // ErrNotTerminal is returned by Deps.TUI when the terminal interface cannot
 // run because output is not an interactive terminal.
-var ErrNotTerminal = errors.New("portpeek tui needs an interactive terminal")
+var ErrNotTerminal = errors.New("tui needs an interactive terminal")
 
 // runTUI parses the tui subcommand's arguments and runs the interface. A
 // Deps.TUI error wrapping context.Canceled means the user interrupted it.

@@ -7,10 +7,19 @@ compatibility policy, described in [docs/json.md](docs/json.md).
 
 ## [Unreleased]
 
-### Added
+### Added (1.1.0)
 
-- Windows adapter (`netstat` + PowerShell `Win32_Process`): tested against
-  fixtures and cross-compiled, not yet verified on a real Windows machine.
+- `portpeek tui`: searchable, auto-refreshing table of every local listening
+  TCP and bound UDP socket, with a details pane that reuses the one-port
+  answer and a confirmed stop action sharing the CLI's identity recheck.
+- `Lister` on every adapter: one cheap inventory call without per-process
+  enrichment.
+- Dependencies: `charm.land/bubbletea/v2`, `bubbles/v2`, `lipgloss/v2`.
+
+### Added (1.0.0)
+
+- Windows adapter (`netstat` + PowerShell `Win32_Process`): fixture tests plus
+  a live test that passes on the Windows CI runner.
 - Platform-specific stop hint (`taskkill /PID` on Windows); `complete` no longer
   depends on a Unix uid on Windows.
 

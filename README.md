@@ -2,10 +2,9 @@
 
 Port Peek answers one question: **what is using this port?** Give it a port
 number and it names the local process that owns it and how the socket is bound.
-It is a command-line tool for macOS and Linux that can also stop the owner after
-confirmation. A Windows adapter is implemented but not yet verified on a real
-Windows machine; a terminal overview comes later (see the
-[roadmap](roadmap/README.md)).
+It is a command-line tool for macOS, Linux and Windows that can also stop the
+owner after confirmation, and `portpeek tui` shows every local port in a
+searchable, refreshing table (see the [roadmap](roadmap/README.md)).
 
 ## Install
 
@@ -125,6 +124,19 @@ exit code is 1; several owners appear as several entries.
 The full field reference, the error object and the compatibility policy are in
 [docs/json.md](docs/json.md).
 
+## Port overview: `portpeek tui`
+
+`portpeek tui [--interval 5s]` lists every listening TCP and bound UDP socket
+with its port, protocol, binding, process, PID and exposure, and refreshes on
+the interval (minimum 1s). Keys: `↑/↓` move, `/` search by port or process,
+`Esc` clear, `s` sort by port or process, `r` refresh, `p` pause, `Enter`
+details, `q` quit. The details pane shows the same text as the one-port
+command; `k` there stops the shown process after a `y` confirmation, using
+the same identity recheck and SIGTERM-only rule as `--stop`. Browsing never
+changes anything. The table needs a terminal; it respects `NO_COLOR`, hides
+columns below 80 columns, and shows the hidden-sockets hint when it applies.
+"Usage" here means which process owns a port; the table measures no traffic.
+
 ## Stopping a process
 
 `portpeek <port> --stop` prints the normal result, then sends SIGTERM to the
@@ -178,13 +190,12 @@ Root inside a container may still lack `CAP_SYS_PTRACE` and see unknown owners.
 `ss -H` needs iproute2 4.13 or newer. A socket bound to one device prints as
 `*%eth0` and is reported as a specific interface.
 
-### Windows (unverified)
+### Windows
 
 Discovery runs `netstat -a -n -o -p <TCP|TCPv6|UDP|UDPv6>` and reads the process
 name and command line through PowerShell (`Get-CimInstance Win32_Process`).
-This adapter is tested against fixtures and compiles for Windows, but it has
-not yet run on a real Windows machine; the Windows CI job is the first check.
-Known limits: other users' command lines need an Administrator shell (the
+The adapter's live test runs on the Windows CI job (first green run 2026-10-05);
+it has not yet been exercised by a person on a Windows desktop. Known limits: other users' command lines need an Administrator shell (the
 executable path is shown instead, or the field is unavailable); user and
 working directory are always unavailable; `--stop` is not supported, the
 `Stop:` hint is `taskkill /PID <pid>`; `netstat` translates state words on
@@ -193,7 +204,7 @@ localized system may report no owner for a port that is in use.
 
 ## Limitations
 
-- macOS and Linux are tested on real sockets; Windows is unverified (see above).
+- macOS and Linux are checked by hand on real sockets; Windows only by its CI live test.
 - On macOS without `sudo`, a root-owned port exits 1, like an unused port. Check
   the hint or `"complete": false`, or run with `sudo`.
 - On macOS, `ps` renders newlines in a command as `\012`.

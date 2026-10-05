@@ -61,9 +61,13 @@ func exposureLabel(e inspect.Exposure) string {
 	}
 }
 
-// buildRows flattens a snapshot into one row per socket.
+// buildRows flattens a snapshot into one row per socket. Sockets that would
+// render as identical rows collapse into one: adapters report both families
+// of a dual-stack wildcard listener as "*", and two equal lines would only
+// look like a glitch. The details view still lists every socket.
 func buildRows(snap inspect.Snapshot) []row {
 	rows := []row{}
+	seen := map[row]bool{}
 	for _, o := range snap.Owners {
 		p := o.Process
 		name := p.Name
@@ -71,14 +75,18 @@ func buildRows(snap inspect.Snapshot) []row {
 			name = "unknown"
 		}
 		for _, s := range o.Sockets {
-			rows = append(rows, row{
+			r := row{
 				port:     s.Port,
 				proto:    s.Protocol,
 				address:  s.Address,
 				process:  name,
 				pid:      p.PID,
 				exposure: s.Exposure(),
-			})
+			}
+			if !seen[r] {
+				seen[r] = true
+				rows = append(rows, r)
+			}
 		}
 	}
 	return rows
@@ -131,12 +139,13 @@ func sortRows(rows []row, mode sortMode) {
 	})
 }
 
-// filterRows returns the rows whose port starts with query or whose process
-// name contains it, ignoring case. An empty query keeps every row.
+// filterRows returns a new slice of the rows whose port starts with query or
+// whose process name contains it, ignoring case. An empty query keeps every
+// row.
 func filterRows(rows []row, query string) []row {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
-		return rows
+		return slices.Clone(rows)
 	}
 	kept := []row{}
 	for _, r := range rows {

@@ -2,9 +2,6 @@
 
 package main
 
-import (
-	"github.com/kaanemec/portpeek/internal/inspect"
-	"github.com/kaanemec/portpeek/internal/inspect/lsof"
-)
+import "github.com/kaanemec/portpeek/internal/inspect/lsof"
 
-func defaultInspector() inspect.Inspector { return lsof.New() }
+func defaultInspector() platformInspector { return lsof.New() }

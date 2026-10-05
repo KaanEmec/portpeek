@@ -5,7 +5,7 @@
 - lsof: revision 4.91 (Apple)
 - Go: go1.27.1; `go test ./...` passes
 - Build: `go build -o portpeek ./cmd/portpeek`; `portpeek --version` prints `portpeek dev`
-- Run as a normal user; `sudo` was not exercised (see "Not verified").
+- Run as a normal user, plus one `sudo` run on port 5353 (check 15b).
 
 Listeners were throwaway Python sockets on ports 47101-47199. Commands and
 paths are trimmed with `...`; the rest is copied from real runs. Exit code is
@@ -178,6 +178,15 @@ No listening or bound socket on port 137 (tcp or udp).
 $ portpeek 137 --json   [1]   "complete": false, "owners": []
 ```
 
+## 15b. Root-owned port with sudo (observed by the owner, 2026-10-05)
+
+Unprivileged, `portpeek 5353` listed two user processes (Codex, Google Chrome
+Helper) followed by the sudo hint. `sudo portpeek 5353 --json` returned
+`"complete": true` and a third owner: `mDNSResponder` (PID 647, user
+`_mdnsresponder`, command `/usr/sbin/mDNSResponder`, working dir `/`), with
+UDP `*:5353` bound on IPv4 and IPv6, `"state": "BOUND"`. No hint line, no
+`unavailable` entries. Pass.
+
 Exit code 1 is the same as for an unused port, but the text hint and
 `"complete": false` now say the answer may be incomplete.
 
@@ -217,6 +226,4 @@ Remaining, none blocking:
 
 ## Not verified
 
-- `sudo portpeek <port>` (no interactive sudo here); expected `"complete": true`
-  and no hint, not observed.
 - Other macOS versions, Intel hardware, a real LAN-address listener.

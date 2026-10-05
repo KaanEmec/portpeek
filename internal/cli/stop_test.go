@@ -531,3 +531,78 @@ func TestRun_StopInterruptedAtPrompt(t *testing.T) {
 		t.Errorf("signalled %v after %d inspections, want no signal and 1 inspection", sys.signalled, fake.calls)
 	}
 }
+
+func TestStopVerified(t *testing.T) {
+	t.Parallel()
+
+	q := inspect.Query{Port: 3000, Protocol: inspect.TCP}
+	node := nodeOwner().Process
+	renamed := nodeOwner()
+	renamed.Process.Name = "ruby"
+
+	tests := []struct {
+		name        string
+		target      inspect.Process
+		recheck     []inspect.Owner
+		aliveChecks int
+		want        StopResult
+		wantSignal  []int
+		wantInspect int
+	}{
+		{
+			name:        "exited",
+			target:      node,
+			recheck:     []inspect.Owner{nodeOwner()},
+			want:        StopResult{Sent: true, Exited: true, Message: "Sent SIGTERM to node (PID 48213); process exited."},
+			wantSignal:  []int{48213},
+			wantInspect: 1,
+		},
+		{
+			name:        "still running",
+			target:      node,
+			recheck:     []inspect.Owner{nodeOwner()},
+			aliveChecks: -1,
+			want: StopResult{
+				Sent:    true,
+				Message: "Sent SIGTERM to node (PID 48213); still running after 2s. To force: kill -9 48213",
+			},
+			wantSignal:  []int{48213},
+			wantInspect: 1,
+		},
+		{
+			name:        "identity changed",
+			target:      node,
+			recheck:     []inspect.Owner{renamed},
+			want:        StopResult{Message: "process changed since inspection; nothing was stopped"},
+			wantInspect: 1,
+		},
+		{
+			name:   "unknown owner is refused without inspecting",
+			target: unknownOwner().Process,
+			want:   StopResult{Message: "owner of port 3000 is unknown; nothing was stopped"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ins := &fakeInspector{result: inspect.Result{Owners: tt.recheck}}
+			sys := &fakeStopper{aliveChecks: tt.aliveChecks}
+
+			got := stopVerified(t.Context(), ins, q, tt.target, sys.stopper())
+
+			if got != tt.want {
+				t.Errorf("result = %+v, want %+v", got, tt.want)
+			}
+			if !slices.Equal(sys.signalled, tt.wantSignal) {
+				t.Errorf("signalled %v, want %v", sys.signalled, tt.wantSignal)
+			}
+			if ins.calls != tt.wantInspect {
+				t.Errorf("inspections = %d, want %d", ins.calls, tt.wantInspect)
+			}
+			if ins.calls > 0 && ins.got != q {
+				t.Errorf("recheck query = %+v, want %+v", ins.got, q)
+			}
+		})
+	}
+}
