@@ -1,0 +1,6 @@
+.DS_Store
+/dist/
+/portpeek
+/bin/
+*.test
+coverage.out
