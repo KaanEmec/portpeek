@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"charm.land/lipgloss/v2"
 
@@ -210,4 +211,24 @@ func Truncate(s string, w int) string {
 		used += rw
 	}
 	return strings.TrimRight(b.String(), " ") + "…"
+}
+
+// EscapeControls replaces each control character in s with its Go escape,
+// such as \t or \x1b, so that every rune left occupies display cells. Process
+// names, users, commands and directories come from other programs: a tab
+// would shift the following columns, and an escape sequence would reach the
+// terminal.
+func EscapeControls(s string) string {
+	if !strings.ContainsFunc(s, unicode.IsControl) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

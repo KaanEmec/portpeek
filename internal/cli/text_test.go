@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
@@ -573,8 +574,8 @@ func TestStylingAllowed(t *testing.T) {
 			t.Parallel()
 
 			getenv := func(key string) string { return tt.env[key] }
-			if got := stylingAllowed(getenv); got != tt.want {
-				t.Errorf("stylingAllowed = %v, want %v", got, tt.want)
+			if got := StylingAllowed(getenv); got != tt.want {
+				t.Errorf("StylingAllowed = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -590,5 +591,62 @@ func TestRenderText_IsPlainDefaultView(t *testing.T) {
 	}
 	if got, want := RenderDetail(q, owners), newTextView(defaultWidth, false).detail(q, owners); got != want {
 		t.Errorf("RenderDetail differs from the detail view\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestEscapeControls(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ in, want string }{
+		{in: "plain name", want: "plain name"},
+		{in: "名前", want: "名前"},
+		{in: "a\tb", want: `a\tb`},
+		{in: "x\x1b[31my", want: `x\x1b[31my`},
+		{in: "nl\n", want: `nl\n`},
+		{in: "c1\u0085", want: `c1\u0085`},
+	}
+	for _, tt := range tests {
+		if got := EscapeControls(tt.in); got != tt.want {
+			t.Errorf("EscapeControls(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestTextView_EscapesProcessText checks that control characters from a
+// process never reach the terminal: names, users, commands and directories
+// are shown escaped in every text view.
+func TestTextView_EscapesProcessText(t *testing.T) {
+	setPrivileged(t, true)
+	q := inspect.Query{Port: 3000}
+	o := nodeOwner()
+	o.Process.Name = "no\x1b]0;pwned\x07de"
+	o.Process.User = "us\ter"
+	o.Process.Command = "/bin/no\x1b]0;pwned\x07de --flag\x1b[2J"
+	o.Process.WorkingDir = "/tmp/\r"
+	other := pythonOwner()
+	other.Process.Name = "py\x1b[31m"
+
+	v := newTextView(defaultWidth, false)
+	views := map[string]string{
+		"compact":       v.compact(q, []inspect.Owner{o}),
+		"detail":        v.detail(q, []inspect.Owner{o}),
+		"several":       v.compact(q, []inspect.Owner{o, other}),
+		"stop headline": headlineProcess(o.Process),
+	}
+	for name, text := range views {
+		if strings.ContainsFunc(text, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }) {
+			t.Errorf("%s: a control character reached the output: %q", name, text)
+		}
+		if !strings.Contains(text, `no\x1b]0;pwned\a`) {
+			t.Errorf("%s: escaped name missing: %q", name, text)
+		}
+	}
+	for _, want := range []string{`us\ter`, `--flag\x1b[2J`, `/tmp/\r`} {
+		if !strings.Contains(views["detail"], want) {
+			t.Errorf("detail lacks escaped %q:\n%s", want, views["detail"])
+		}
+	}
+	if !strings.Contains(views["several"], `py\x1b[31m`) {
+		t.Errorf("several-owner table lacks the escaped name:\n%s", views["several"])
 	}
 }

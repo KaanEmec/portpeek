@@ -31,6 +31,7 @@ func Run(ctx context.Context, opts cli.TUIOptions) error {
 		lister:   opts.Lister,
 		ins:      opts.Inspector,
 		interval: opts.Interval,
+		styled:   cli.StylingAllowed(os.Getenv),
 		stop: func(ctx context.Context, q inspect.Query, target inspect.Process) cli.StopResult {
 			return cli.StopVerified(ctx, opts.Inspector, q, target)
 		},

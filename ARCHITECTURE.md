@@ -75,7 +75,13 @@ each. `--detail` prints grouped Sockets / Process / Stop sections with every kno
 field. Unavailable fields print the reason, never a guess. Hidden-socket and
 unknown-owner hints are one short trailing line. Styling (bold, dim) only on a
 terminal with `NO_COLOR` unset and `TERM != dumb`; width from the terminal, else 100.
-`RenderText`/`RenderDetail` are exported for the TUI, always plain at width 100. JSON (`--json`) is versioned
+`RenderText`/`RenderDetail` are exported for the TUI, always plain at width 100.
+The TUI has a 256-color theme (`internal/tui/theme.go`, screenshots in `docs/tui*.png`):
+exposure colored by risk (green loopback, amber all interfaces, blue interface, gray
+unknown), tcp blue / udp magenta tags, teal accent for ports, selection bar, title and
+footer, red bar for the stop prompt. Light/dark variants chosen from the terminal's
+background; fully plain under NO_COLOR, TERM=dumb or no terminal. Process text is
+control-character escaped in every text view. JSON (`--json`) is versioned
 (`"schema": 1`) and stable from 1.0; multiple owners and unavailable fields are explicit.
 
 ## Key decisions

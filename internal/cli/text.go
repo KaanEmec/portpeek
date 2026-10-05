@@ -33,7 +33,7 @@ const (
 )
 
 // Styling is applied only when stdout is a colour-capable terminal; see
-// stylingAllowed. lipgloss v2's Style.Render always emits escape codes and
+// StylingAllowed. lipgloss v2's Style.Render always emits escape codes and
 // leaves downsampling to a colorprofile writer, so the decision is made here
 // rather than left to the library.
 var (
@@ -73,7 +73,7 @@ func stdoutView(out stdio) textView {
 		width = out.width
 	}
 
-	styled := tty && stylingAllowed(os.Getenv)
+	styled := tty && StylingAllowed(os.Getenv)
 	if styled {
 		// Turns on escape-code processing in the legacy Windows console; a
 		// no-op elsewhere.
@@ -82,10 +82,10 @@ func stdoutView(out stdio) textView {
 	return newTextView(width, styled)
 }
 
-// stylingAllowed reports whether the environment permits bold and dim text on
-// a terminal: NO_COLOR (https://no-color.org) must be unset or empty, and
-// TERM must not be "dumb".
-func stylingAllowed(getenv func(string) string) bool {
+// StylingAllowed reports whether the environment permits styled text on a
+// terminal: NO_COLOR (https://no-color.org) must be unset or empty, and TERM
+// must not be "dumb". The terminal interface follows the same rule.
+func StylingAllowed(getenv func(string) string) bool {
 	return getenv("NO_COLOR") == "" && getenv("TERM") != "dumb"
 }
 
@@ -215,7 +215,7 @@ func (v textView) compactOwner(q inspect.Query, o inspect.Owner) []string {
 		return lines
 	}
 	if p.Command != "" {
-		lines = append(lines, v.line(indent, shortCommand(p.Name, p.Command), nil))
+		lines = append(lines, v.line(indent, EscapeControls(shortCommand(p.Name, p.Command)), nil))
 	} else {
 		lines = append(lines, v.line(indent, "command "+processField(p, inspect.FieldCommand, ""), v.dim))
 	}
@@ -412,8 +412,9 @@ func portLabel(q inspect.Query, sockets []inspect.Socket) string {
 	return strconv.Itoa(q.Port) + "/" + strings.Join(protos, "+")
 }
 
-// ownerName is the process name, "unknown process" for an owner the OS did
-// not attribute, or "name unavailable" when only the name is missing.
+// ownerName is the process name with control characters escaped, "unknown
+// process" for an owner the OS did not attribute, or "name unavailable" when
+// only the name is missing.
 func ownerName(p inspect.Process) string {
 	switch {
 	case isUnknownOwner(p):
@@ -421,7 +422,7 @@ func ownerName(p inspect.Process) string {
 	case p.Name == "":
 		return "name unavailable"
 	default:
-		return p.Name
+		return EscapeControls(p.Name)
 	}
 }
 

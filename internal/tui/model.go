@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
@@ -23,6 +24,8 @@ type config struct {
 	ins      inspect.Inspector
 	stop     stopFunc
 	interval time.Duration
+	// styled turns on colours; see cli.StylingAllowed.
+	styled bool
 	// now is the clock used for refresh and inspection times when a
 	// snapshot carries none.
 	now func() time.Time
@@ -56,6 +59,15 @@ type (
 	stopMsg struct{ res cli.StopResult }
 )
 
+// tone is how a stop outcome reads: done, worth a look, or failed.
+type tone int
+
+const (
+	toneOK tone = iota
+	toneWarn
+	toneErr
+)
+
 // model is the Bubble Tea model of the port overview.
 type model struct {
 	// ctx bounds every List, Inspect and stop the model starts. Bubble Tea
@@ -63,6 +75,10 @@ type model struct {
 	ctx  context.Context
 	cfg  config
 	keys keyMap
+
+	theme theme
+	// spinner turns while a List or an inspection is in flight, styled only.
+	spinner spinner.Model
 
 	width, height int
 
@@ -88,8 +104,8 @@ type model struct {
 	// next successful one.
 	listErr string
 	// notice reports the outcome of the last stop action.
-	notice      string
-	noticeIsErr bool
+	notice     string
+	noticeTone tone
 
 	screen screen
 	detail detailState
@@ -117,18 +133,42 @@ func newModel(ctx context.Context, cfg config) model {
 	search := textinput.New()
 	search.Prompt = "/ "
 	search.Placeholder = "port or process"
-	return model{
+	m := model{
 		ctx:     ctx,
 		cfg:     cfg,
 		keys:    defaultKeyMap(),
+		spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		search:  search,
 		loading: true,
 	}
+	// Dark until the terminal reports its background.
+	m.setTheme(true)
+	return m
 }
 
-// Init starts the first List and the auto-refresh timer.
+// setTheme builds the theme for the terminal's background.
+func (m *model) setTheme(isDark bool) {
+	m.theme = newTheme(m.cfg.styled, isDark)
+	m.search.SetStyles(m.theme.searchStyles(isDark))
+}
+
+// Init starts the first List and the auto-refresh timer and, styled, asks
+// the terminal for its background colour.
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.listCmd(), m.scheduleTick())
+	var background tea.Cmd
+	if m.theme.styled {
+		background = tea.RequestBackgroundColor
+	}
+	return tea.Batch(m.listCmd(), m.scheduleTick(), m.spin(), background)
+}
+
+// spin starts the spinner, or returns nil unstyled. Starting it while it
+// turns is harmless: the spinner drops the duplicate tick.
+func (m model) spin() tea.Cmd {
+	if !m.theme.styled {
+		return nil
+	}
+	return m.spinner.Tick
 }
 
 // Update handles one message and keeps the selected row on screen.
@@ -144,6 +184,18 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.search.SetWidth(max(m.viewWidth()-len(m.search.Prompt)-1, 1))
 		return m, nil
+	case tea.BackgroundColorMsg:
+		m.setTheme(msg.IsDark())
+		return m, nil
+	case spinner.TickMsg:
+		// The spinner stops by letting its tick go once nothing is in
+		// flight.
+		if !m.loading && !m.detail.loading {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	case listMsg:
 		return m.applyList(msg)
 	case tickMsg:
@@ -188,7 +240,7 @@ func (m model) refresh() (model, tea.Cmd) {
 		return m, nil
 	}
 	m.loading = true
-	return m, m.listCmd()
+	return m, tea.Batch(m.listCmd(), m.spin())
 }
 
 // applyList shows a new snapshot, or keeps the last good table and reports
@@ -372,10 +424,10 @@ func (m model) openDetails() (model, tea.Cmd) {
 	m.notice = ""
 
 	ctx, ins := m.ctx, m.cfg.ins
-	return m, func() tea.Msg {
+	return m, tea.Batch(func() tea.Msg {
 		res, err := ins.Inspect(ctx, q)
 		return detailMsg{seq: seq, res: res, err: err}
-	}
+	}, m.spin())
 }
 
 // applyDetail shows an inspection result unless the user has moved on.
@@ -450,7 +502,14 @@ func (m model) applyStop(msg stopMsg) (model, tea.Cmd) {
 		return m, nil
 	}
 	m.notice = msg.res.Message
-	m.noticeIsErr = !msg.res.Sent
+	switch {
+	case msg.res.Exited:
+		m.noticeTone = toneOK
+	case msg.res.Sent:
+		m.noticeTone = toneWarn
+	default:
+		m.noticeTone = toneErr
+	}
 	return m.refresh()
 }
 

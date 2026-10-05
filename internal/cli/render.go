@@ -99,9 +99,9 @@ func protocolPhrase(q inspect.Query) string {
 	return string(q.Protocol)
 }
 
-// headlineProcess names the process in the --stop flow's messages, falling
-// back to the PID when the name is unavailable and to "an unknown process"
-// when the owner is unknown.
+// headlineProcess names the process in the --stop flow's messages, with
+// control characters escaped, falling back to the PID when the name is
+// unavailable and to "an unknown process" when the owner is unknown.
 func headlineProcess(p inspect.Process) string {
 	switch {
 	case isUnknownOwner(p):
@@ -109,7 +109,7 @@ func headlineProcess(p inspect.Process) string {
 	case p.Name == "":
 		return fmt.Sprintf("PID %d", p.PID)
 	default:
-		return fmt.Sprintf("%s (PID %d)", p.Name, p.PID)
+		return fmt.Sprintf("%s (PID %d)", EscapeControls(p.Name), p.PID)
 	}
 }
 
@@ -125,11 +125,11 @@ func protocols(sockets []inspect.Socket) []string {
 	return names
 }
 
-// processField returns the value, or the unavailable reason when the field
-// could not be read.
+// processField returns the value with control characters escaped, or the
+// unavailable reason when the field could not be read.
 func processField(p inspect.Process, f inspect.Field, value string) string {
 	if value != "" {
-		return value
+		return EscapeControls(value)
 	}
 	if reason, ok := p.Unavailable[f]; ok && reason != "" {
 		return fmt.Sprintf("unavailable (%s)", reason)

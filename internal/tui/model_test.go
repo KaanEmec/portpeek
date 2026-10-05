@@ -130,6 +130,12 @@ type fixture struct {
 // applied. Ticks are delivered by running their command, never by waiting.
 func newFixture(t *testing.T, width int, results ...listResult) *fixture {
 	t.Helper()
+	return newThemedFixture(t, width, false, results...)
+}
+
+// newThemedFixture is newFixture with styling on or off.
+func newThemedFixture(t *testing.T, width int, styled bool, results ...listResult) *fixture {
+	t.Helper()
 	if len(results) == 0 {
 		results = []listResult{{snap: baseSnapshot()}}
 	}
@@ -143,6 +149,7 @@ func newFixture(t *testing.T, width int, results ...listResult) *fixture {
 		ins:      f.ins,
 		stop:     f.stop.stop,
 		interval: 5 * time.Second,
+		styled:   styled,
 		now:      func() time.Time { return taken.Add(time.Minute) },
 		after:    func(_ time.Duration, msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } },
 	})

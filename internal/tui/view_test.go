@@ -32,10 +32,11 @@ func layoutSnapshot() inspect.Snapshot {
 	return snap
 }
 
-// newSizedFixture returns a fixture over layoutSnapshot resized to w x h.
-func newSizedFixture(t *testing.T, w, h int) *fixture {
+// newSizedFixture returns a fixture over layoutSnapshot resized to w x h,
+// styled or plain.
+func newSizedFixture(t *testing.T, w, h int, styled bool) *fixture {
 	t.Helper()
-	f := newFixture(t, w, listResult{snap: layoutSnapshot()})
+	f := newThemedFixture(t, w, styled, listResult{snap: layoutSnapshot()})
 	f.send(t, tea.WindowSizeMsg{Width: w, Height: h})
 	return f
 }
@@ -144,7 +145,7 @@ func checkTable(t *testing.T, f *fixture) {
 			r := m.visible[idx]
 			marker := ""
 			if idx == m.cursor {
-				marker = ">"
+				marker = m.theme.marker
 			}
 			want := make([]string, 0, len(cols))
 			for _, c := range cols {
@@ -155,42 +156,53 @@ func checkTable(t *testing.T, f *fixture) {
 	}
 }
 
+// themes names the plain and the styled theme for subtests.
+var themes = map[string]bool{"plain": false, "styled": true}
+
 func TestView_ColumnsAligned(t *testing.T) {
 	t.Parallel()
 
-	for _, w := range []int{100, 80, 79, 60, 59, 40} {
-		t.Run(fmt.Sprint(w), func(t *testing.T) {
-			t.Parallel()
+	for name, styled := range themes {
+		for _, w := range []int{100, 80, 79, 60, 59, 40} {
+			t.Run(fmt.Sprintf("%s/%d", name, w), func(t *testing.T) {
+				t.Parallel()
 
-			f := newSizedFixture(t, w, 25)
-			checkTable(t, f)
-
-			// The selection moves onto rows of every kind; selected and
-			// unselected rows must line up the same way.
-			for range 8 {
-				f.press(t, "down")
+				f := newSizedFixture(t, w, 25, styled)
 				checkTable(t, f)
-			}
-		})
+
+				// The selection moves onto rows of every kind; selected and
+				// unselected rows must line up the same way.
+				for range 8 {
+					f.press(t, "down")
+					checkTable(t, f)
+				}
+			})
+		}
 	}
 }
 
 func TestView_ControlCharactersEscaped(t *testing.T) {
 	t.Parallel()
 
-	f := newSizedFixture(t, 100, 25)
-	screen := f.screen()
-	for _, want := range []string{`tab\there`, `esc\x1b[2Jape`} {
-		if !strings.Contains(screen, want) {
-			t.Errorf("screen lacks escaped name %q:\n%s", want, screen)
-		}
-	}
-	if strings.ContainsAny(stripANSI(f.m.View().Content), "\t\x1b") {
-		t.Error("a control character from a process name reached the view")
+	for name, styled := range themes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSizedFixture(t, 100, 25, styled)
+			screen := f.screen()
+			for _, want := range []string{`tab\there`, `esc\x1b[2Jape`} {
+				if !strings.Contains(screen, want) {
+					t.Errorf("screen lacks escaped name %q:\n%s", want, screen)
+				}
+			}
+			if strings.ContainsAny(stripANSI(f.m.View().Content), "\t\x1b") {
+				t.Error("a control character from a process name reached the view")
+			}
+		})
 	}
 }
 
-var tableRow = regexp.MustCompile(`^(> |  )\d+ `)
+var tableRow = regexp.MustCompile(`^(> |❯ |  )\d+ `)
 
 func TestView_FitsTerminal(t *testing.T) {
 	t.Parallel()
@@ -211,41 +223,49 @@ func TestView_FitsTerminal(t *testing.T) {
 		{w: 20, h: 1, wantRows: 0},
 	}
 	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%dx%d", tt.w, tt.h), func(t *testing.T) {
-			t.Parallel()
-
-			f := newSizedFixture(t, tt.w, tt.h)
-			checkFits(t, f, tt.w, tt.h, "start")
-			if got := countRows(f.screen()); got != tt.wantRows {
-				t.Errorf("start: %d table rows, want %d:\n%s", got, tt.wantRows, f.screen())
-			}
-
-			// Walk past the bottom of the window: the selected row stays on
-			// screen and the window stays the same size.
-			for i := range len(f.m.visible) + 3 {
-				f.press(t, "down")
-				label := fmt.Sprintf("down %d", i+1)
-				checkFits(t, f, tt.w, tt.h, label)
-				if got := countRows(f.screen()); got != tt.wantRows {
-					t.Fatalf("%s: %d table rows, want %d:\n%s", label, got, tt.wantRows, f.screen())
-				}
-				if tt.wantRows > 0 && !strings.Contains(f.screen(), "\n> ") {
-					t.Fatalf("%s: selected row scrolled off screen:\n%s", label, f.screen())
-				}
-			}
-
-			f.press(t, "/", "2")
-			checkFits(t, f, tt.w, tt.h, "searching")
-			f.press(t, "esc")
-
-			f.ins.res = inspect.Result{Owners: []inspect.Owner{nodeOwner()}}
-			f.sendAll(t, f.press(t, "enter"))
-			f.press(t, "k")
-			checkFits(t, f, tt.w, tt.h, "details")
-			f.press(t, "n", "esc")
-			checkFits(t, f, tt.w, tt.h, "back")
-		})
+		for name, styled := range themes {
+			t.Run(fmt.Sprintf("%s/%dx%d", name, tt.w, tt.h), func(t *testing.T) {
+				t.Parallel()
+				checkFitsTerminal(t, tt.w, tt.h, tt.wantRows, styled)
+			})
+		}
 	}
+}
+
+// checkFitsTerminal walks the table, search and details of a w x h
+// terminal and checks that every screen fits it and shows wantRows rows.
+func checkFitsTerminal(t *testing.T, w, h, wantRows int, styled bool) {
+	t.Helper()
+	f := newSizedFixture(t, w, h, styled)
+	checkFits(t, f, w, h, "start")
+	if got := countRows(f.screen()); got != wantRows {
+		t.Errorf("start: %d table rows, want %d:\n%s", got, wantRows, f.screen())
+	}
+
+	// Walk past the bottom of the window: the selected row stays on screen
+	// and the window stays the same size.
+	for i := range len(f.m.visible) + 3 {
+		f.press(t, "down")
+		label := fmt.Sprintf("down %d", i+1)
+		checkFits(t, f, w, h, label)
+		if got := countRows(f.screen()); got != wantRows {
+			t.Fatalf("%s: %d table rows, want %d:\n%s", label, got, wantRows, f.screen())
+		}
+		if wantRows > 0 && !strings.Contains(f.screen(), "\n"+f.m.theme.marker+" ") {
+			t.Fatalf("%s: selected row scrolled off screen:\n%s", label, f.screen())
+		}
+	}
+
+	f.press(t, "/", "2")
+	checkFits(t, f, w, h, "searching")
+	f.press(t, "esc")
+
+	f.ins.res = inspect.Result{Owners: []inspect.Owner{nodeOwner()}}
+	f.sendAll(t, f.press(t, "enter"))
+	f.press(t, "k")
+	checkFits(t, f, w, h, "details")
+	f.press(t, "n", "esc")
+	checkFits(t, f, w, h, "back")
 }
 
 // checkFits reports a view with more lines than the terminal has rows, a
@@ -277,20 +297,104 @@ func countRows(screen string) int {
 	return n
 }
 
-func TestEscapeControls(t *testing.T) {
+func TestView_PlainHasNoEscapes(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct{ in, want string }{
-		{in: "plain name", want: "plain name"},
-		{in: "名前", want: "名前"},
-		{in: "a\tb", want: `a\tb`},
-		{in: "x\x1b[31my", want: `x\x1b[31my`},
-		{in: "nl\n", want: `nl\n`},
-		{in: "c1\u0085", want: `c1\u0085`},
+	f := newSizedFixture(t, 100, 25, false)
+	if strings.Contains(f.m.View().Content, "\x1b") {
+		t.Errorf("plain table carries escape codes:\n%q", f.m.View().Content)
 	}
-	for _, tt := range tests {
-		if got := escapeControls(tt.in); got != tt.want {
-			t.Errorf("escapeControls(%q) = %q, want %q", tt.in, got, tt.want)
+	f.ins.res = inspect.Result{Owners: []inspect.Owner{nodeOwner()}}
+	f.sendAll(t, f.press(t, "enter"))
+	f.press(t, "k")
+	if strings.Contains(f.m.View().Content, "\x1b") {
+		t.Errorf("plain details carry escape codes:\n%q", f.m.View().Content)
+	}
+}
+
+func TestView_StyledColoursByMeaning(t *testing.T) {
+	t.Parallel()
+
+	f := newThemedFixture(t, 100, true)
+	th := f.m.theme
+	content := f.m.View().Content
+	// The cursor is on node, so postgres and the unknown owner are plain
+	// rows whose cells carry their own colours.
+	for name, want := range map[string]string{
+		"loopback exposure":       th.exposureStyle(inspect.ExposureLoopback).Render(pad("loopback only", 14)),
+		"all-interfaces exposure": th.exposureStyle(inspect.ExposureAllInterfaces).Render(pad("all interfaces", 14)),
+		"udp tag":                 th.udp.Render(pad("udp", 5)),
+		"port":                    th.port.Render(pad("5432", 5)),
+		"pid":                     th.dim.Render(pad("700", 7)),
+		"badge":                   th.badge.Render(badgeText),
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("view lacks the %s styled as %q", name, want)
 		}
+	}
+
+	lines := strings.Split(stripANSI(content), "\n")
+	if !strings.HasPrefix(lines[2], styledMarker+" 3000") {
+		t.Fatalf("selected row is %q, want the %s marker on 3000", lines[2], styledMarker)
+	}
+	for i, label := range map[int]string{1: "header", 2: "selection"} {
+		if w := lipgloss.Width(lines[i]); w != 100 {
+			t.Errorf("%s bar is %d cells wide, want the full 100", label, w)
+		}
+	}
+	if !strings.Contains(lines[len(lines)-1], "↑/↓ move   enter details   / search   s sort") {
+		t.Errorf("help line is %q", lines[len(lines)-1])
+	}
+}
+
+func TestView_StyledChrome(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(t.Context(), config{lister: &fakeLister{}, styled: true})
+	if got := stripANSI(m.View().Content); !strings.Contains(got, m.spinner.View()+" refreshing…") {
+		t.Errorf("loading view lacks the spinner:\n%s", got)
+	}
+
+	f := newThemedFixture(t, 100, true)
+	f.press(t, "p", "/", "n", "o", "enter")
+	title := strings.Split(f.screen(), "\n")[0]
+	for _, want := range []string{"⏸ paused", "filter: no"} {
+		if !strings.Contains(title, want) {
+			t.Errorf("title bar %q lacks %q", title, want)
+		}
+	}
+}
+
+func TestView_StyledDetails(t *testing.T) {
+	t.Parallel()
+
+	f := newThemedFixture(t, 100, true)
+	th := f.m.theme
+	f.ins.res = inspect.Result{Owners: []inspect.Owner{nodeOwner()}}
+	f.sendAll(t, f.press(t, "enter"))
+
+	content := f.m.View().Content
+	lines := strings.Split(stripANSI(content), "\n")
+	if !strings.HasPrefix(lines[1], "╭─ 3000/tcp ─") || !strings.HasSuffix(lines[1], "╮") {
+		t.Errorf("top border is %q", lines[1])
+	}
+	if last := lines[len(lines)-2]; !strings.HasPrefix(last, "╰─") {
+		t.Errorf("line above the footer is %q, want the bottom border", last)
+	}
+	if !strings.Contains(content, th.heading.Render("Sockets")) {
+		t.Error("the Sockets heading is not styled")
+	}
+	if !strings.Contains(content, th.exposureStyle(inspect.ExposureLoopback).Render("loopback only")) {
+		t.Error("the socket's exposure is not coloured")
+	}
+	if !strings.Contains(content, th.dim.Render(pad("user", len("working dir")+3))) {
+		t.Error("the Process labels are not dim")
+	}
+
+	f.press(t, "k")
+	lines = strings.Split(f.screen(), "\n")
+	prompt := lines[len(lines)-2]
+	if !strings.HasPrefix(prompt, " Send SIGTERM to node (PID 48213)? y/N") || lipgloss.Width(prompt) != 100 {
+		t.Errorf("stop prompt is %q, want a full-width bar", prompt)
 	}
 }
