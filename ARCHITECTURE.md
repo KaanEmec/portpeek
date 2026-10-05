@@ -99,7 +99,7 @@ terminal with `NO_COLOR` unset and `TERM != dumb`; width from the terminal, else
 |---|---|---|
 | v0.1 macOS answer | done 2026-10-05 | model, CLI, lsof adapter, validation record in docs/validation.md |
 | v0.2 safe control + Linux | done 2026-10-05 | `--stop` flow; `ss`/procfs adapter validated in Docker (golang:1.27, iproute2 6.15) and CI ubuntu runner |
-| v1.0 cross-platform release | ready to tag | Windows live test green on CI; GoReleaser + release workflow ready; remote github.com/kaanemec/portpeek, MIT confirmed by owner 2026-10-05 |
+| v1.0 cross-platform release | released in v1.2.0 (2026-10-05) | Windows live test green on CI; GoReleaser + release workflow ready; remote github.com/kaanemec/portpeek, MIT confirmed by owner 2026-10-05 |
 | v1.2 readable output | done 2026-10-05 | compact default, `--detail` view, TUI details pane uses `RenderDetail` |
 | v1.1 port TUI | done 2026-10-05 | `Lister` on all adapters; Bubble Tea table, details, refresh, search, stop from details; verified live on macOS |
 

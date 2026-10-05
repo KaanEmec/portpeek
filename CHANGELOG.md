@@ -7,6 +7,12 @@ compatibility policy, described in [docs/json.md](docs/json.md).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.2.0] - 2026-10-05
+
+First public release: everything below from 1.0.0 to 1.2.0 ships together.
+
 ### Added (1.2.0)
 
 - Compact default text output: a headline per port, one line per binding
@@ -70,6 +76,7 @@ compatibility policy, described in [docs/json.md](docs/json.md).
 - Exit codes: `0` at least one owner, `1` no matching socket, `2` invalid
   input, `3` inspection failed.
 
-[Unreleased]: https://github.com/kaanemec/portpeek/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.0
 [0.2.0]: https://github.com/kaanemec/portpeek/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kaanemec/portpeek/releases/tag/v0.1.0
