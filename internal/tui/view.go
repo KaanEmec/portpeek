@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -51,11 +52,13 @@ func (m model) View() tea.View {
 	return v
 }
 
+// render returns the screen as exactly one line per terminal row, none
+// wider than the terminal, so nothing wraps or scrolls.
 func (m model) render() string {
 	if m.screen == screenDetails {
-		return m.renderDetails()
+		return clampLines(m.renderDetails(), m.viewHeight())
 	}
-	return m.renderTable()
+	return clampLines(m.renderTable(), m.viewHeight())
 }
 
 func (m model) viewWidth() int {
@@ -322,9 +325,39 @@ func helpLine(bindings ...key.Binding) string {
 	return strings.Join(parts, "  ")
 }
 
-// fit truncates s to w display cells, ending in "…" when cut.
+// fit truncates s to w display cells, ending in "…" when cut. Control
+// characters are escaped first: a tab or escape sequence in a process name or
+// command would otherwise shift every following column or reach the
+// terminal.
 func fit(s string, w int) string {
-	return cli.Truncate(s, w)
+	return cli.Truncate(escapeControls(s), w)
+}
+
+// escapeControls replaces each control character in s with its Go escape,
+// such as \t or \x1b, so that every rune left occupies display cells.
+func escapeControls(s string) string {
+	if !strings.ContainsFunc(s, unicode.IsControl) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// clampLines keeps the first height lines of s, so that a terminal too short
+// for the header and footer never scrolls.
+func clampLines(s string, height int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= height {
+		return s
+	}
+	return strings.Join(lines[:max(height, 1)], "\n")
 }
 
 // pad fits s into exactly w display cells.

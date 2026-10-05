@@ -22,7 +22,8 @@ import (
 // cli.ErrNotTerminal when stdout is not a terminal, and an error wrapping
 // context.Canceled when the user presses Ctrl-C or ctx ends.
 func Run(ctx context.Context, opts cli.TUIOptions) error {
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	fd := int(os.Stdout.Fd())
+	if !term.IsTerminal(fd) {
 		return cli.ErrNotTerminal
 	}
 
@@ -36,6 +37,11 @@ func Run(ctx context.Context, opts cli.TUIOptions) error {
 		now:   time.Now,
 		after: after,
 	})
+	// Lay out the first frame for the real terminal rather than the default
+	// size; Bubble Tea reports the same size again, and every later change.
+	if w, h, err := term.GetSize(fd); err == nil {
+		m.width, m.height = w, h
+	}
 	_, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	if errors.Is(err, tea.ErrInterrupted) || errors.Is(err, context.Canceled) {
 		return context.Canceled
