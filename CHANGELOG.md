@@ -7,7 +7,20 @@ compatibility policy, described in [docs/json.md](docs/json.md).
 
 ## [Unreleased]
 
-Nothing yet.
+## [1.2.1] - 2026-10-05
+
+### Added
+
+- TUI color theme: exposure colored by risk, protocol tags, teal accent, title
+  bar with refresh spinner, selection bar, bordered details pane, red stop
+  prompt; light and dark variants; plain under `NO_COLOR` or `TERM=dumb`.
+
+### Fixed
+
+- TUI: control characters in process names are escaped, the view never exceeds
+  the terminal height, and the first frame uses the real terminal size.
+- CLI text output escapes control characters in process names, users, commands
+  and working directories.
 
 ## [1.2.0] - 2026-10-05
 
@@ -76,7 +89,8 @@ First public release: everything below from 1.0.0 to 1.2.0 ships together.
 - Exit codes: `0` at least one owner, `1` no matching socket, `2` invalid
   input, `3` inspection failed.
 
-[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/kaanemec/portpeek/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.1
 [1.2.0]: https://github.com/kaanemec/portpeek/releases/tag/v1.2.0
 [0.2.0]: https://github.com/kaanemec/portpeek/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kaanemec/portpeek/releases/tag/v0.1.0
