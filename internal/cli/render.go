@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,11 +12,9 @@ import (
 	"github.com/kaanemec/portpeek/internal/inspect"
 )
 
-// privileged reports whether the process can see every user's sockets. On
-// macOS, lsof silently omits other users' sockets unless run as root, so an
-// unprivileged result may be incomplete and a "no match" may simply mean
-// "not visible".
-var privileged = os.Geteuid() == 0
+// privileged reports whether the process can see every user's sockets. See
+// platform_unix.go and platform_windows.go.
+var privileged = allSocketsVisible()
 
 // Completeness hints end a text result that may be missing information.
 // unknownOwnerHint wins over hiddenSocketsHint when both apply, because it
@@ -133,7 +130,7 @@ func writeOwner(b *strings.Builder, q inspect.Query, owner inspect.Owner) {
 	// An unknown owner has no PID, and "kill 0" would signal the user's own
 	// process group, so no stop hint is printed for it.
 	if !unknown {
-		writeField(b, "Stop", "kill "+strconv.Itoa(p.PID))
+		writeField(b, "Stop", stopHint(p.PID))
 	}
 }
 

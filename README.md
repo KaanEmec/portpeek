@@ -2,8 +2,9 @@
 
 Port Peek answers one question: **what is using this port?** Give it a port
 number and it names the local process that owns it and how the socket is bound.
-Version 0.2 is a command-line tool for macOS and Linux that can also stop the
-owner after confirmation; Windows and a terminal overview come later (see the
+It is a command-line tool for macOS and Linux that can also stop the owner after
+confirmation. A Windows adapter is implemented but not yet verified on a real
+Windows machine; a terminal overview comes later (see the
 [roadmap](roadmap/README.md)).
 
 ## Install
@@ -18,6 +19,23 @@ go build -o portpeek ./cmd/portpeek        # from a checkout
 The module path is a placeholder until there is a public remote, so use the
 checkout build for now. Runtime dependencies: `lsof` and `ps` on macOS (both
 ship with it), `ss` from iproute2 plus `/proc` on Linux.
+
+### Releases
+
+Prebuilt archives for macOS (amd64, arm64), Linux (amd64, arm64) and Windows
+(amd64) are attached to each GitHub Release once the project has a public
+remote (none yet, so there are no downloads today). Download the archive for
+your OS and architecture together with `checksums.txt`, then verify and unpack:
+
+```
+shasum -a 256 -c checksums.txt --ignore-missing
+tar -xzf portpeek_<version>_<os>_<arch>.tar.gz     # .zip on Windows
+```
+
+(`--ignore-missing` is a GNU/BSD option that skips archives you did not
+download; plain `-c` complains about them.) The binary is a single file with no
+runtime dependencies beyond the OS tools listed above; put it anywhere on your
+`PATH`.
 
 ## Usage
 
@@ -104,6 +122,9 @@ below). `state` is `LISTEN` for TCP listeners and `BOUND` for UDP sockets and
 TCP sockets bound without listening. With no match, `owners` is `[]` and the
 exit code is 1; several owners appear as several entries.
 
+The full field reference, the error object and the compatibility policy are in
+[docs/json.md](docs/json.md).
+
 ## Stopping a process
 
 `portpeek <port> --stop` prints the normal result, then sends SIGTERM to the
@@ -157,9 +178,22 @@ Root inside a container may still lack `CAP_SYS_PTRACE` and see unknown owners.
 `ss -H` needs iproute2 4.13 or newer. A socket bound to one device prints as
 `*%eth0` and is reported as a specific interface.
 
+### Windows (unverified)
+
+Discovery runs `netstat -a -n -o -p <TCP|TCPv6|UDP|UDPv6>` and reads the process
+name and command line through PowerShell (`Get-CimInstance Win32_Process`).
+This adapter is tested against fixtures and compiles for Windows, but it has
+not yet run on a real Windows machine; the Windows CI job is the first check.
+Known limits: other users' command lines need an Administrator shell (the
+executable path is shown instead, or the field is unavailable); user and
+working directory are always unavailable; `--stop` is not supported, the
+`Stop:` hint is `taskkill /PID <pid>`; `netstat` translates state words on
+non-English Windows, and translated rows are dropped rather than guessed, so a
+localized system may report no owner for a port that is in use.
+
 ## Limitations
 
-- macOS and Linux; Windows not yet (it reports the platform as unsupported).
+- macOS and Linux are tested on real sockets; Windows is unverified (see above).
 - On macOS without `sudo`, a root-owned port exits 1, like an unused port. Check
   the hint or `"complete": false`, or run with `sudo`.
 - On macOS, `ps` renders newlines in a command as `\012`.
@@ -182,3 +216,5 @@ and history are out of scope.
 
 Manual checks (macOS 26.6.2, 2026-10-05) with real output and the problems
 found are in [docs/validation.md](docs/validation.md).
+
+License: MIT

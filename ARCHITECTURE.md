@@ -13,7 +13,7 @@ internal/inspect        shared model: Query, Result, Owner, Socket, Process, Err
                         Inspector interface, exposure classification
 internal/inspect/lsof   macOS adapter: runs `lsof`, parses -F output, enriches with `ps`
 internal/inspect/ss     Linux adapter: runs `ss`, parses rows, enriches from /proc
-internal/inspect/<os>   later: windows (PowerShell/API)
+internal/inspect/netstat Windows adapter: `netstat -ano` per protocol, PowerShell Win32_Process
 cmd/portpeek/platform_* build-tagged selection of the default Inspector per OS
 internal/tui            v1.1: Bubble Tea overview, reuses inspect + cli formatting
 ```
@@ -34,8 +34,10 @@ seam so parsers are tested against recorded fixtures, not live sockets.
   all-interfaces / specific-interface from the address. No claims about firewalls.
 - `Process{PID, Name, User, Command, WorkingDir}` with `Unavailable map[Field]string`
   recording why a field could not be read (permission, process exited, tool limit).
-- `Error{Kind, Op, Err}` with kinds `ToolMissing`, `PermissionDenied`, `CommandFailed`.
-  The CLI maps kinds to messages and exit codes; adapters never print.
+- `Error{Kind, Op, Err}` with kinds `ToolMissing`, `PermissionDenied`, `CommandFailed`,
+  `Unsupported`. The CLI maps kinds to messages and exit codes; adapters never print.
+  With `--json`, inspection errors go to stdout as `{"schema":1,"error":{kind,message}}`;
+  usage errors and interrupts stay plain text on stderr. Contract: docs/json.md.
 
 Ownership rule: a process owns a port through any socket whose local port matches and
 that has no peer: TCP in LISTEN (reported `LISTEN`) or TCP bound without listen and
@@ -71,6 +73,7 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 |---|---|---|
 | Language / deps | Go, standard library plus `golang.org/x/term` (TTY detection for `--stop`); Charm libs only in `internal/tui` | Single small binary, no runtime. A mode-bits check mistakes `/dev/null` for a terminal |
 | macOS source | `lsof -nP -F pcnLTtfP0 -i :PORT` then `ps -o command=` and `lsof -d cwd` per PID | Machine-readable, present on every macOS, no entitlements |
+| Windows source | `netstat -a -n -o -p {TCP,TCPv6,UDP,UDPv6}` then `Get-CimInstance Win32_Process` per PID via `powershell -NoProfile` | Present on every Windows, no admin needed for PIDs. Unverified on real Windows until CI runs; `Get-NetTCPConnection` is the locale-independent fallback if netstat's translated state words prove a problem |
 | Linux source | `ss -H -a -n -p -t -u 'sport = :PORT'` then `/proc/PID/{comm,cmdline,cwd,status}` | iproute2 is ubiquitous; procfs needs no extra tool. `-H` needs iproute2 ≥ 4.13; wildcard `*` means dual-stack IPv6, `0.0.0.0`/`[::]`/`*` all stored as `*` |
 | No-match detection | `lsof` exit 1 with empty stdout and no non-WARNING stderr = no match; otherwise failure | Observed behaviour; avoids false "nothing found" |
 | Link-local IPv6 | `lsof` packs the scope index into the second group (`fe80:1::1`); adapter rewrites to `fe80::1%lo0` | Otherwise the shown address cannot be connected to |
@@ -85,7 +88,7 @@ never a guess. Text ends with a one-line exposure explanation and a manual stop 
 |---|---|---|
 | v0.1 macOS answer | done 2026-10-05 | model, CLI, lsof adapter, validation record in docs/validation.md |
 | v0.2 safe control + Linux | done 2026-10-05 | `--stop` flow; `ss`/procfs adapter validated in Docker (golang:1.27, iproute2 6.15) and CI ubuntu runner |
-| v1.0 cross-platform release | planned | Windows adapter, JSON freeze, GoReleaser, CI |
+| v1.0 cross-platform release | code complete, release blocked | Windows adapter unverified until a Windows CI run; GoReleaser + release workflow ready; needs a real remote/module path and licence confirmation before tagging |
 | v1.1 port TUI | planned | inventory API on adapters, Bubble Tea table + details |
 
 Out of scope: remote scanning, Docker management, traffic measurement, history.

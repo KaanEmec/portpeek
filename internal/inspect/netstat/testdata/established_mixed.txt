@@ -1,0 +1,8 @@
+
+Active Connections
+
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       1234
+  TCP    127.0.0.1:3000         127.0.0.1:52000        ESTABLISHED     1234
+  TCP    127.0.0.1:3000         127.0.0.1:51999        TIME_WAIT       0
+  TCP    127.0.0.1:52000        127.0.0.1:3000         ESTABLISHED     5678

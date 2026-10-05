@@ -1,0 +1,62 @@
+# GoReleaser v2 configuration for Port Peek.
+# Run by .github/workflows/release.yml on a pushed v* tag.
+version: 2
+
+project_name: portpeek
+
+builds:
+  - id: portpeek
+    main: ./cmd/portpeek
+    binary: portpeek
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # Windows on ARM is not a 1.0 target.
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/kaanemec/portpeek/internal/cli.Version={{.Version}}
+
+archives:
+  - id: portpeek
+    formats: [tar.gz]
+    name_template: "portpeek_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - docs/json.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: git
+  filters:
+    exclude:
+      - "^docs"
+      - "^test"
+      - "^ci"
+      - "^chore"
+      - "^style"
+      - "Merge pull request"
+      - "Merge branch"
+      - "Merge remote-tracking branch"
+
+release:
+  draft: false
+  prerelease: auto

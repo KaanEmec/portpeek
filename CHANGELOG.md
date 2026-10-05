@@ -1,0 +1,51 @@
+# Changelog
+
+All notable changes to Port Peek are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+[Semantic Versioning](https://semver.org/). The JSON output has its own
+compatibility policy, described in [docs/json.md](docs/json.md).
+
+## [Unreleased]
+
+### Added
+
+- Windows adapter (`netstat` + PowerShell `Win32_Process`): tested against
+  fixtures and cross-compiled, not yet verified on a real Windows machine.
+- Platform-specific stop hint (`taskkill /PID` on Windows); `complete` no longer
+  depends on a Unix uid on Windows.
+
+### Planned for 1.0.0
+- JSON output schema 1 frozen and documented in [docs/json.md](docs/json.md).
+- Prebuilt binaries for macOS (amd64, arm64), Linux (amd64, arm64) and Windows
+  (amd64) with SHA-256 checksums, published by GoReleaser from a version tag.
+- Licence (MIT) and release notes.
+
+## [0.2.0] - 2026-10-05
+
+### Added
+
+- `--stop`: send SIGTERM to the process using the port, after confirmation on a
+  terminal (or with `--force` when stdin is not a terminal). `--pid` chooses the
+  process when several use the port. The port is inspected again right before
+  signalling and nothing is stopped if the PID or its name changed. SIGKILL is
+  never sent. Exit code `4` covers every case where nothing was stopped.
+- Linux support through an `ss` and `/proc` adapter.
+- Unknown owner handling: when a socket is visible but its process cannot be
+  read (for example Linux without root), the result is reported as an unknown
+  process with `"pid": 0`, no stop hint is printed, `--stop` refuses it, and the
+  answer is marked incomplete.
+
+## [0.1.0] - 2026-10-05
+
+### Added
+
+- macOS answer to "what is using this port?" through `lsof` and `ps`: process
+  name, PID, user, command, working directory, bound address, state and
+  exposure.
+- Text output and versioned machine-readable JSON output (`--json`, schema 1).
+- Exit codes: `0` at least one owner, `1` no matching socket, `2` invalid
+  input, `3` inspection failed.
+
+[Unreleased]: https://github.com/kaanemec/portpeek/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kaanemec/portpeek/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/kaanemec/portpeek/releases/tag/v0.1.0
