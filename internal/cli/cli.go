@@ -21,6 +21,8 @@ const (
 	exitBadInput = 2 // invalid input or usage
 	exitFailure  = 3 // inspection failed
 
+	exitNotStopped = 4 // --stop given but nothing was stopped, or signalling failed
+
 	exitInterrupted = 130 // interrupted; shell convention of 128 + SIGINT
 )
 
@@ -30,21 +32,29 @@ var Version = "dev"
 const usageHint = "Try 'portpeek --help' for usage."
 
 const helpText = `Usage: portpeek <port> [--tcp|--udp] [--json]
+       portpeek <port> --stop [--pid <pid>] [--force] [--tcp|--udp]
 
 Show which process is using a local port.
 
 Options:
-  --tcp       only look at TCP sockets
-  --udp       only look at UDP sockets
-  --json      print machine-readable JSON (schema 1)
-  --version   print the version and exit
-  -h, --help  show this help and exit
+  --tcp        only look at TCP sockets
+  --udp        only look at UDP sockets
+  --json       print machine-readable JSON (schema 1)
+  --stop       send SIGTERM to the process using the port, after confirmation
+  --pid <pid>  with --stop, the process to stop when several use the port
+  --force      with --stop, skip confirmation (required when stdin is not a terminal)
+  --version    print the version and exit
+  -h, --help   show this help and exit
+
+--stop re-inspects the port right before signalling and stops nothing if the
+process changed. It sends SIGTERM only and never escalates to SIGKILL.
 
 Exit codes:
-  0  at least one process uses the port
+  0  at least one process uses the port (with --stop: SIGTERM was sent)
   1  no listening or bound socket on the port
   2  invalid input
   3  inspection failed (tool missing, permission denied, command error)
+  4  --stop did not stop anything (declined, ambiguous, changed, or signal failed)
 130  interrupted
 `
 
@@ -55,11 +65,28 @@ type options struct {
 	json     bool
 	version  bool
 	help     bool
+
+	stop  bool
+	force bool
+	pid   int // 0 when --pid was not given
 }
 
 // Run parses args (without the program name), runs the inspector, writes the
-// output, and returns the process exit code.
+// output, and returns the process exit code. Only --stop has side effects;
+// without it Run is read-only.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, ins inspect.Inspector) int {
+	return run(ctx, args, stdio{stdout: stdout, stderr: stderr}, ins, systemStopper())
+}
+
+// stdio groups the output streams Run writes to.
+type stdio struct {
+	stdout io.Writer
+	stderr io.Writer
+}
+
+// run is Run with the stop side effects injected, so tests can replace them.
+func run(ctx context.Context, args []string, out stdio, ins inspect.Inspector, sys stopper) int {
+	stdout, stderr := out.stdout, out.stderr
 	opts, err := parseArgs(args)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "portpeek: %v\n%s\n", err, usageHint)
@@ -78,8 +105,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, ins inspe
 	q := inspect.Query{Port: opts.port, Protocol: opts.protocol}
 	res, err := ins.Inspect(ctx, q)
 	if errors.Is(err, context.Canceled) {
-		_, _ = fmt.Fprintln(stderr, "portpeek: interrupted")
-		return exitInterrupted
+		return reportInterrupted(stderr)
 	}
 	if err != nil {
 		return reportFailure(stdout, stderr, q, err, opts.json)
@@ -92,7 +118,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, ins inspe
 	if len(res.Owners) == 0 {
 		return exitNoMatch
 	}
-	return exitOK
+	if !opts.stop {
+		return exitOK
+	}
+
+	s := stopRun{sys: sys, ins: ins, out: out, query: q}
+	return s.stop(ctx, res.Owners, opts)
+}
+
+// reportInterrupted writes the interruption notice and returns its exit code.
+func reportInterrupted(stderr io.Writer) int {
+	_, _ = fmt.Fprintln(stderr, "portpeek: interrupted")
+	return exitInterrupted
 }
 
 // parseArgs parses flags and the single positional port. Flags may appear
@@ -108,6 +145,16 @@ func parseArgs(args []string) (options, error) {
 	fs.BoolVar(&udp, "udp", false, "")
 	fs.BoolVar(&opts.json, "json", false, "")
 	fs.BoolVar(&opts.version, "version", false, "")
+	fs.BoolVar(&opts.stop, "stop", false, "")
+	fs.BoolVar(&opts.force, "force", false, "")
+	fs.Func("pid", "", func(value string) error {
+		pid, err := strconv.Atoi(value)
+		if err != nil || pid < 1 {
+			return errors.New("must be a positive process ID")
+		}
+		opts.pid = pid
+		return nil
+	})
 
 	// Everything after a literal "--" is positional.
 	var positional []string
@@ -145,6 +192,15 @@ func parseArgs(args []string) (options, error) {
 		opts.protocol = inspect.TCP
 	case udp:
 		opts.protocol = inspect.UDP
+	}
+
+	switch {
+	case opts.stop && opts.json:
+		return options{}, errors.New("--stop cannot be used with --json")
+	case opts.force && !opts.stop:
+		return options{}, errors.New("--force requires --stop")
+	case opts.pid != 0 && !opts.stop:
+		return options{}, errors.New("--pid requires --stop")
 	}
 
 	port, err := parsePort(positional)
